@@ -13,6 +13,7 @@ What picks one is the state you have:
 | [`Ractor::LockVar`](docs/lockvar.md) | one shareable value | `lv.update {\|v\| v + 1 }` |
 | [`Ractor::LockHash`](docs/lockhash.md) | a hash of shareable values, atomic across its own keys | `h.synchronize {\|h\| h[k] = v }` |
 | [`Ractor::TVar`](docs/tvar.md) | several shareable values, changed together | `Ractor.atomically { a.value += 1; b.value -= 1 }` |
+| [`Ractor::ActorHash`](docs/actor_hash.md) | a hash of anything, kept by a Ractor | `h.call {\|db\| db[:hits] += 1 }` |
 | [`Ractor::ActiveObject`](docs/active_object.md) | a mutable object, kept unshareable | `sync def add(k, v) = @db[k] = v` |
 
 The first two hold **shareable** values, so an update replaces the value rather
@@ -56,6 +57,16 @@ twice.
 ```ruby
 from, to = Ractor::TVar.new(100), Ractor::TVar.new(0)
 Ractor.atomically { from.value -= 10; to.value += 10 }
+```
+
+**A hash whose values will not be frozen — `ActorHash`.** Same shape as
+`LockHash`, but the entries live in a Ractor of its own, so they can be anything
+and `call` changes them in place over there. One Ractor and ~9 µs a call, against
+LockHash's few hundred ns.
+
+```ruby
+h = Ractor::ActorHash.new
+h.call {|db| db[:log] ||= []; db[:log] << line }
 ```
 
 **A mutable object — `ActiveObject`.** When freezing the state is not on the
