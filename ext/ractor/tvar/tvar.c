@@ -573,7 +573,7 @@ tvar_memsize(const void *ptr)
 static const rb_data_type_t tvar_data_type = {
     "Thread::TVar",
     {tvar_mark, tvar_free, tvar_memsize, NULL},
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_FROZEN_SHAREABLE
 };
 
 static struct tvar_slot *
@@ -603,7 +603,12 @@ tvar_new_(VALUE self, VALUE init)
     slot->index = txg_next_index(txg);
     tx_slot_lock_init(&slot->lock);
 
-    FL_SET_RAW(obj, RUBY_FL_SHAREABLE);
+    /* Only the slot changes, and it is not a Ruby object, so the TVar itself can
+     * be frozen and shared.  Setting the flag by hand instead left it shareable
+     * but not frozen, which let the main Ractor go on attaching ivars to an
+     * object other Ractors were holding. */
+    rb_obj_freeze(obj);
+    rb_ractor_make_shareable(obj);
 
     return obj;
 }

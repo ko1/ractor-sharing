@@ -101,6 +101,21 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_equal 2, tv.value
   end
 
+  test "a TVar is frozen, so shareable means what it says" do
+    # The shareable flag used to be set by hand, which left the TVar shareable
+    # but not frozen: the main Ractor could go on attaching ivars to an object
+    # other Ractors were holding.
+    tv = Ractor::TVar.new(1)
+    assert_true tv.frozen?
+    assert_true Ractor.shareable?(tv)
+    assert_raise(FrozenError) { tv.instance_variable_set(:@x, []) }
+
+    # and it still works as a variable
+    Ractor.atomically { tv.value = 5 }
+    assert_equal 6, tv.increment
+    assert_equal 7, Ractor.new(tv) { |t| t.increment; t.value }.value
+  end
+
   test "a TVar with no slot yet, and a forged transaction log, raise instead of crashing" do
     # Both took a raw DATA_PTR of whatever they were handed. Ractor::TVar.allocate
     # gave a TVar with a NULL slot, and the thread local holding the transaction

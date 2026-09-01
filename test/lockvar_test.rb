@@ -243,6 +243,8 @@ class LockVarTest < Test::Unit::TestCase
     assert_acquirable lv
   end
 
+  # #value no longer goes through the guard, but it still takes the lock, which
+  # is what these two tests are about.
   def test_value_waits_for_an_update_in_flight
     lv = Ractor::LockVar.new(0)
     q = Queue.new
