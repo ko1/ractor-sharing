@@ -85,6 +85,22 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_equal [1], tv.value
   end
 
+  # What is allowed outside a transaction. The API section of the documentation
+  # is the one part a running example cannot check, so it is checked here.
+  test "a write needs a transaction, a read and an increment do not" do
+    tv = Ractor::TVar.new(0)
+
+    assert_equal 0, tv.value, "a read outside a transaction is allowed"
+
+    e = assert_raise(Ractor::TransactionError) { tv.value = 1 }
+    assert_equal "can not set without transaction", e.message
+    assert_equal 0, tv.value, "and it wrote nothing"
+
+    assert_equal 1, tv.increment, "increment outside a transaction is allowed"
+    assert_equal 2, Ractor.atomically { tv.value = tv.value + 1 }
+    assert_equal 2, tv.value
+  end
+
   test "increment adds in one step" do
     tv = Ractor::TVar.new(1)
     assert_equal 2, tv.increment

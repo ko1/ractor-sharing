@@ -55,20 +55,29 @@ tv.value #=> 40000
 ## API
 
 ```ruby
-tv = Ractor::TVar.new(initial = nil)
-
-tv.value             # read
-tv.value = v         # write
-tv.increment(n = 1)  # add, in one step
+tv = Ractor::TVar.new(initial = nil)   # any shareable object
 
 Ractor.atomically { ... }   # everything inside is one transaction
+
+tv.value             # read; inside a transaction or out
+tv.value = v         # write; only inside a transaction
+tv.increment(n = 1)  # add in one step; inside or out, for values that answer to +
 ```
 
 Values must be shareable; `ArgumentError` otherwise.
 
-Outside `Ractor.atomically`, `value` and `value=` act on the variable directly
-without a transaction: one read or one write, with nothing tying it to any
-other. Use a transaction whenever two operations have to belong together.
+**A write needs a transaction.** `tv.value = v` on its own raises
+`Ractor::TransactionError`, "can not set without transaction". There is no
+one-off write, because a write on its own is where a lost update comes from:
+
+```ruby
+Ractor.atomically { tv.value = tv.value + 1 }   # right
+tv.increment                                    # right, and shorter
+```
+
+A read outside a transaction is allowed, and returns the value as it stands.
+`increment` is allowed too: outside a transaction it takes the variable's own
+lock and does the whole add in one step.
 
 `Ractor::TransactionError` is raised for a transaction that cannot proceed;
 `Ractor::RetryTransaction` is what a rollback is made of.
