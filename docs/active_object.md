@@ -48,9 +48,10 @@ Requires Ruby 4.0 or later (`Ractor::Port`).
 Each instance starts a Ractor of its own, and that Ractor runs until the process
 ends: there is no shutdown. Creating active objects in a loop leaks them.
 
-Every call from another Ractor is a message round trip — about **8.7 µs**
-measured on 16 cores, where an uncontended `Ractor::LockVar#update` on the same
-machine is **0.12 µs**. Calls to one object run one at a time on its owner, so a
+Every call from another Ractor is a message round trip, about **2.0 µs** measured
+on 16 cores, where an uncontended `Ractor::LockVar#update` on the same machine is
+**0.12 µs**. From the main Ractor rather than a worker it is **8.9 µs**, because
+that thread has a native thread to itself and waking it is a syscall. Calls to one object run one at a time on its owner, so a
 single hot object caps how fast callers get through it.
 
 None of that applies to calls made *inside* the owner: those are plain Ruby
@@ -82,7 +83,7 @@ cheaper.
 ### Calls on the owner Ractor
 
 Inside the owner Ractor the object is a plain `Foo` instance (the *servant*):
-calls between its methods are ordinary Ruby calls — no mailbox, no policy,
+calls between its methods are ordinary Ruby calls, with no mailbox and no policy;
 `async` methods run immediately and return their real value. A proxy used
 inside its own owner Ractor (e.g. through a constant) also calls the servant
 directly. `owner?` tells you which side you are on; `owner` is the owner
@@ -126,14 +127,14 @@ number of concurrent callers. A port whose wait was interrupted (e.g. by
 
 A caller waits on its reply port alone (`Port#receive`), not on
 `Ractor.select(reply, owner)`: watching the owner as well costs ≈4 % of a
-9 µs empty `sync` call. The owner is not expected to die — its request loop
-rescues `Exception` — and if it does go down with a request in flight it
+2 µs `sync` call. The owner is not expected to die, since its request loop
+rescues `Exception`, and if it does go down with a request in flight it
 answers that caller with an `ActiveObject::Error` from an `ensure`, while any
 later send fails fast with `Ractor::ClosedError` → `ActiveObject::Error`.
 
 The gap this leaves is a caller whose request was still queued when the owner
 died: it stays blocked in `receive`. Waking it would need either the
-per-call `Ractor.select`, or `Ractor#monitor` on the reply port — but
+per-call `Ractor.select`, or `Ractor#monitor` on the reply port, but
 `monitor` delivers a bare `:exited` that does not say which Ractor exited, so
 reply ports would have to be pooled per owner, and that bookkeeping costs the
 same ≈4 %. (`Port#close` is not an option: it cannot be called from another

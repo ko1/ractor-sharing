@@ -23,7 +23,7 @@ h.async_call {|h| (h[:log] ||= []) << "a line" }   # a value it goes on appendin
 ```
 
 The price is the owner: one Ractor per ActorHash, running until the process
-ends, and about **9 µs** for a round trip — where a LockHash operation is a few
+ends, and about **2 µs** for a round trip, where a LockHash operation is a few
 hundred **ns**. Reach for this one when the state genuinely will not be frozen;
 otherwise LockHash is far cheaper.
 
@@ -65,7 +65,8 @@ h.async_call {|h| h[key] = 1 }       # => Ractor::IsolationError
 h.set(key, 1)                        # fine
 ```
 
-For anything else — deleting, clearing, changing a value in place — send a block.
+For anything else, such as deleting, clearing, or changing a value in place, send
+a block.
 
 `async` and `future` mean what they mean for
 [`Ractor::ActiveObject`](active_object.md), which this is built on: an exception
@@ -90,7 +91,7 @@ That is the same bargain ETS makes, and it is what lets the values be mutable at
 all. To change one, change it where it lives.
 
 The block is handed the **real Hash**, not a copy and not a proxy, so every Hash
-method is there. It cannot escape either — the block runs on the owner, and
+method is there. It cannot escape either, since the block runs on the owner and
 anything returned is copied on the way back.
 
 ### The block is isolated
@@ -113,11 +114,11 @@ to `n` makes every block that reads it impossible to isolate.
 
 | | shareable values, no Ractor | any values, a Ractor of its own |
 |---|---|---|
-| one value | [`LockVar`](lockvar.md) | — |
+| one value | [`LockVar`](lockvar.md) | |
 | a hash | [`LockHash`](lockhash.md) | **`ActorHash`** |
-| your own class | — | [`ActiveObject`](active_object.md) |
+| your own class | | [`ActiveObject`](active_object.md) |
 
-`ActorHash` is an `ActiveObject` with the interface already chosen — it is built
+`ActorHash` is an `ActiveObject` with the interface already chosen, and is built
 on one. Use `ActiveObject` directly when the state deserves methods of its own.
 
 Part of [ractor-sharing](../README.md).

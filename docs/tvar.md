@@ -45,7 +45,7 @@ Ractor.atomically { ... }   # everything inside is one transaction
 Values must be shareable; `ArgumentError` otherwise.
 
 Outside `Ractor.atomically`, `value` and `value=` act on the variable directly
-without a transaction — one read or one write, with nothing tying it to any
+without a transaction: one read or one write, with nothing tying it to any
 other. Use a transaction whenever two operations have to belong together.
 
 `Ractor::TransactionError` is raised for a transaction that cannot proceed;
@@ -53,10 +53,10 @@ other. Use a transaction whenever two operations have to belong together.
 
 ## When something else fits better
 
-* One variable, or a block that must not run twice —
+* One variable, or a block that must not run twice:
   [`Ractor::LockVar`](lockvar.md), which waits its turn instead of retrying.
-* State you do not want to freeze — a mutable object, updated in place —
-  [`Ractor::ActiveObject`](active_object.md).
+* State you do not want to freeze, a mutable object updated in place:
+  [`Ractor::ActorHash`](actor_hash.md) or [`Ractor::ActiveObject`](active_object.md).
 
 ## Scaling
 

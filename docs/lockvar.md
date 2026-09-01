@@ -47,7 +47,7 @@ lv.update { {a: 1}.freeze }        # fine
 That is what makes a LockVar safe to hand to any Ractor: it is frozen and
 shareable itself, and the value inside it is too, so nothing reachable through it
 can be mutated behind the lock's back. It also means an update replaces the value
-rather than modifying it — `lv.update { it.merge(k => v).freeze }`, not
+rather than modifying it: `lv.update { it.merge(k => v).freeze }`, not
 `lv.value[k] = v`.
 
 A rejected value leaves the variable as it was.
@@ -55,7 +55,7 @@ A rejected value leaves the variable as it was.
 ### Reads and updates
 
 Both take the lock, so an update's **whole block** is atomic as far as readers
-are concerned — not just its final store. That is what an update block needs when
+are concerned, not just its final store. That is what an update block needs when
 it makes anything else observable:
 
 ```ruby
@@ -68,18 +68,18 @@ There is no `value=`: an unlocked write would silently discard a concurrent
 `update` that had already read the old value.
 
 Note that the block's result *is* the new value, so a block that forgets to
-return it clears the variable — `lv.update {|v| puts v }` stores `nil`.
+return it clears the variable: `lv.update {|v| puts v }` stores `nil`.
 
 `increment` is there because adding to a number is the most common update of all;
 it is the block form with the block written for you, and behaves the same way in
-every respect — including refusing to store a sum that is not shareable.
+every respect, including refusing to store a sum that is not shareable.
 
 ## Read-modify-write belongs inside the block
 
 Any new value computed from the current one has to be computed inside `update`,
 from the value the block is given. Reading outside and writing inside is broken:
 another update lands in between, and yours discards it. Counting is only the
-smallest example — the same goes for appending to a frozen array, merging into a
+smallest example. The same goes for appending to a frozen array, merging into a
 frozen hash, clamping, toggling, anything that reads before it writes.
 
 ```ruby
@@ -116,7 +116,7 @@ defence.
 ## One variable, and how that differs from TVar
 
 The unit here is a single variable. That is the whole distinction between this
-and its neighbour — not optimistic versus pessimistic, which is only how each one
+and its neighbour, not optimistic versus pessimistic, which is only how each one
 happens to be built.
 
 | | `Ractor::LockVar` | [`Ractor::TVar`](https://github.com/ko1/ractor-tvar) |
@@ -129,7 +129,7 @@ happens to be built.
 | lock ordering | refused: one variable at a time | not a question |
 
 A transaction only starts to mean something once there is a second variable, so
-for one variable there is nothing to express beyond a read-modify-write — which
+for one variable there is nothing to express beyond a read-modify-write, which
 is why reading and updating are all there is to it.
 
 The row that decides most cases is the rollback. A `TVar` transaction that loses
@@ -157,7 +157,7 @@ rare production deadlock into a deterministic error. Reaching for a second
 variable is the sign that you wanted a transaction: `Ractor::TVar` logs reads and
 writes and retries on conflict, so it needs no lock order at all.
 
-No LockVar can be touched from inside an update, its own included — the block is
+No LockVar can be touched from inside an update, its own included. The block is
 handed the value it needs, and a nested update's write would be discarded by the
 outer block's result anyway. The holder is tracked per **thread**.
 
@@ -167,7 +167,7 @@ The block holds the lock while it runs, so everything else waiting on this
 variable waits for it. Compute the new value and nothing more: no IO, no waiting
 on anything, no calling out to code that might. This is not a `LockVar`
 restriction so much as the rule for any critical section, and `TVar` wants the
-same thing for its own reason — a transaction is validated against the version it
+same thing for its own reason: a transaction is validated against the version it
 read when it started, so a long block is a long window for somebody else to
 invalidate it.
 
@@ -177,7 +177,7 @@ Numbers are **ns per completed operation across all Ractors**, so one that halve
 when the Ractors double means it scaled. Measured on 16 cores; sources and
 conditions in `~/ruby/src/trials/ractor-lockvar-vs-tvar/`.
 
-### Independent variables — every Ractor has one of its own
+### Independent variables, one per Ractor
 
 ```ruby
 vars = n.times.map { Ractor::LockVar.new(0) }
@@ -196,7 +196,7 @@ n.times.map {|i| Ractor.new(vars[i]) {|v| K.times { v.update { it + 1 } } } }.ea
 Sixteen Ractors on sixteen LockVars complete 8.9× as many updates per second as
 one Ractor does; this machine tops out around 8× on plainly parallel work, so
 that is as far as anything scales here. Sixteen Ractors on sixteen *TVars* manage
-1.4×. The blocks do run in parallel — it is the commit that does not: every
+1.4×. The blocks do run in parallel; it is the commit that does not. Every
 committing update takes one process-wide lock to allocate the next version
 number, whichever variable it touched, and past two Ractors that lock is the
 ceiling.
@@ -205,7 +205,7 @@ A single uncontended read costs more on a LockVar (89 ns against 40) because it
 takes the lock, which is what buys the guarantee in *Reads and updates* above.
 `TVar#value` outside a transaction takes nothing and guarantees nothing.
 
-### One shared variable — every Ractor increments the same one
+### One shared variable, every Ractor on it
 
 ```ruby
 v = Ractor::LockVar.new(0)
@@ -220,7 +220,7 @@ n.times.map { Ractor.new(v) {|x| K.times { x.update { it + 1 } } } }.each(&:join
 | 8 | 481 | 266 |
 | 16 | 460 | 417 |
 
-Neither scales — one variable is one variable — and `TVar` is ahead throughout:
+Neither scales, since one variable is one variable, and `TVar` is ahead throughout:
 the loser of a race retries a short block, where `LockVar` parks the thread and
 wakes it through a port, which costs more than the block did. The gap narrows as
 Ractors are added, because `TVar` spends more of its time on work it discards: at
@@ -229,7 +229,7 @@ against 1.00× by construction here.
 
 **Do not choose `LockVar` for speed on a contended variable.** How much any of
 this matters depends on how often your variable is actually contended, which is a
-property of your program rather than of either class — so measure yours. What
+property of your program rather than of either class, so measure yours. What
 `LockVar` gives you regardless is the row above: the block runs once.
 
 ## Implementation notes
@@ -241,7 +241,7 @@ property of your program rather than of either class — so measure yours. What
   condition variable. `Port#receive` goes through the VM scheduler, so the wait
   **rides the M:N scheduler** (enabled by default on non-main Ractors) and stays
   interruptible: `Thread#kill` on a waiter works and leaves the lock untouched.
-* An uncontended `update` touches the native mutex only — no Port is created and
+* An uncontended `update` touches the native mutex only: no Port is created and
   no message is sent.
 * `update` and `value` are written in C so that no interrupt can be delivered
   between taking the lock and arming the `ensure` that releases it. (With the

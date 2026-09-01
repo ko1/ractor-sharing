@@ -92,7 +92,7 @@ h.synchronize {|h| h[:n] = (h[:n] || 0) + 1 }    # count: read and write in one 
 There is no `compute` or `fetch_or_store` here. One lock covers the whole hash,
 so a dedicated method for one key would run at exactly the same speed as the
 block above, and only spend a name. Such methods start to mean something when a
-lock can be taken per key, and this one is not — see below.
+lock can be taken per key, and this one is not. See below.
 
 ### What one `synchronize` gives you
 
@@ -117,8 +117,8 @@ written; the lock is released, nothing more.
 
 One lock covers the whole hash, so **writes to unrelated keys wait for each
 other**, and a snapshot is O(n). A hash written to constantly is better modelled
-as one [`Ractor::LockVar`](lockvar.md) per key — those scale with the cores —
-which you can do whenever you never need two keys to change together.
+as one [`Ractor::LockVar`](lockvar.md) per key, which scales with the cores.
+That is open to you whenever you never need two keys to change together.
 
 Acquisition is not FIFO: a thread may barge ahead of waiters, so readers hammering
 a hash in a tight loop can starve a writer. Keep sections short, and give busy
