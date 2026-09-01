@@ -31,6 +31,10 @@ lv.increment(n = 1)    # add n under the lock, as update {|v| v + n } would
 lv.inspect
 ```
 
+`inspect` does not take the lock, so it never blocks and never raises: call it
+from a debugger, from inside another update, from anywhere. The value it shows
+may be one update out of date, which for a display is the right trade.
+
 A variable, not a lock: there is no lock, unlock, or owner query. `value` and
 `update` are the whole of it, and `increment` is there because a counter is what
 a shared variable most often is.

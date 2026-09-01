@@ -230,6 +230,10 @@ lockvar_value(VALUE self)
     return v;
 }
 
+/* Reads the value without the lock, on purpose.  inspect is for a debugger, a
+ * `p`, an exception message: it must not block and must not raise, and a value
+ * is one word, so an unlocked read gets some real value, just possibly a stale
+ * one.  That is the right trade for a display. */
 static VALUE
 lockvar_inspect(VALUE self)
 {
