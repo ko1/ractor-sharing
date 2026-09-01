@@ -59,9 +59,9 @@ end
 class Record < Ractor::ActiveObject
   def initialize = @rec = REC
   sync  def value = @rec
-  sync  def bump = do_bump
-  async def bump_async = do_bump
-  def do_bump = (@rec = { status: @rec[:status], seq: @rec[:seq] + 1 }.freeze)  # 非公開
+  # 本体は書き下す。共通メソッドに切り出すと、この 2 行だけ dispatch が 1 段増える。
+  sync  def bump = (@rec = { status: @rec[:status], seq: @rec[:seq] + 1 }.freeze)
+  async def bump_async = (@rec = { status: @rec[:status], seq: @rec[:seq] + 1 }.freeze)
 end
 
 # read/write は shareable proc。全対象が同じ「proc 呼び出し 1 回」を通るので、
@@ -132,38 +132,66 @@ MODES = %i[read write mix].freeze
 def writes_per(mode, per) = mode == :read ? 0 : (mode == :write ? per : per / MIX)
 
 def run(objs, sub, mode, per)
+  gate = Ractor::Port.new
   rs = objs.map do |obj|
-    Ractor.new(obj, sub[:local], sub[:read], sub[:write], per, mode, MIX) do |o, mk, rd, wr, n, m, mix|
+    Ractor.new(obj, gate, sub[:local], sub[:read], sub[:write], sub[:flush], per, mode, MIX) do
+      |o, g, mk, rd, wr, fl, n, m, mix|
       o ||= mk.call
-      Ractor.receive                      # go を待つ = 起動コストを外に出す
+      g << :ready                         # 起動も Cell.new も測定窓の外へ
+      Ractor.receive                       # go を待つ
       sum = 0
       case m
       when :read  then n.times { sum += rd.call(o) }
       when :write then n.times { wr.call(o) }
       else             n.times { |i| (i % mix == mix - 1) ? wr.call(o) : sum += rd.call(o) }
       end
-      sum
+      # 送りっぱなしを自分で確定させる。所有者は届いた順に処理するので、自分の
+      # 同期読みが返れば自分の送りは全部済んでいる。coordinator にまとめてやらせると
+      # no conflict のとき C 回の直列往復が測定窓に乗ってしまう。
+      fl&.call(o)
+      [sum, rd.call(o)]
     end
   end
+  objs.size.times { gate.receive }        # 全員が receive の手前まで来た
   m = bmeasure(objs.size * per) do
     rs.each { |r| r.send(:go) }
-    vals = rs.map(&:value)
-    objs.uniq.each { |o| sub[:flush].call(o) } if sub[:flush]
-    vals
+    rs.map(&:value)
   end
   verify(objs, sub, mode, per, m.value)
   m
 end
 
-# 検算。壊れた測定が「速い」に見えるのを塞ぐ。
-def verify(objs, sub, mode, per, sums)
-  if mode == :read
-    want = per * REC[:seq]
-    sums.each { |s| abort "#{sub[:label]}: read sum #{s} != #{want}" unless s == want }
-  end
+# 検算。壊れた測定が「速い」に見えるのを塞ぐ。worker は [read の合計, 最後に
+# 読んだ seq] を返す。後者があるので、床のように外から触れない対象も検算できる。
+def verify(objs, sub, mode, per, results)
+  sums = results.map(&:first)
+  lasts = results.map(&:last)
   w = writes_per(mode, per)
+  reads = per - w
+
+  case mode
+  when :read
+    want = per * REC[:seq]
+    sums.each { |s| abort "#{sub[:label]} read: sum #{s} != #{want}" unless s == want }
+  when :mix
+    # mix の read は動いている値を見るので合計は決まらない。seq は 1 から増える
+    # 一方なので、下限だけは決まる。0 を返す no-op はここで落ちる。
+    sums.each do |s|
+      abort "#{sub[:label]} mix: read sum #{s} < #{reads}" unless s >= reads
+    end
+  end
   return if w.zero?
-  return if sub[:local]   # 床は Ractor の中で自分の Cell を作るので外から読めない
+
+  # worker 自身の最後の読み。対象を独り占めしているときだけ値が決まる（共有して
+  # いると、先に終わった worker はまだ書いている他人の途中を読む）。床はここでしか
+  # 検算できない: Cell は Ractor の中にしかなく、外から触れない。
+  if sub[:local] || objs.uniq.size == objs.size
+    want_own = REC[:seq] + w
+    lasts.each do |got|
+      abort "#{sub[:label]} #{mode}: own seq #{got} != #{want_own} (lost updates)" unless got == want_own
+    end
+  end
+  return if sub[:local]
   objs.uniq.each do |o|
     want = REC[:seq] + w * objs.count { |x| x.equal?(o) }
     got = sub[:seq].call(o)
@@ -172,9 +200,16 @@ def verify(objs, sub, mode, per, sums)
 end
 
 def run_fast_path(objs, sub, per)
+  gate = Ractor::Port.new
   rs = objs.map do |obj|
-    Ractor.new(obj, sub[:write], per) { |o, wr, n| Ractor.receive; n.times { wr.call(o) }; nil }
+    Ractor.new(obj, gate, sub[:write], per) do |o, g, wr, n|
+      g << :ready
+      Ractor.receive
+      n.times { wr.call(o) }
+      nil
+    end
   end
+  objs.size.times { gate.receive }
   m = bmeasure(objs.size * per) { rs.each { |r| r.send(:go) }; rs.each(&:join) }
   objs.uniq.each do |o|
     want = per * objs.count { |x| x.equal?(o) }
@@ -184,12 +219,19 @@ def run_fast_path(objs, sub, per)
   m
 end
 
+def make_objs(c, sub, cond)
+  if cond == :conflict
+    shared = sub[:make].call
+    Array.new(c) { shared }
+  else
+    Array.new(c) { sub[:make].call }      # conflict 側の 1 個をここで作らない:
+  end                                     # 所有者 Ractor は止められないので残り続ける
+end
+
 def sweep(c, sub, per)
   MODES.flat_map do |mode|
     [:conflict, :noconflict].map do |cond|
-      shared = sub[:make].call
-      objs = cond == :conflict ? Array.new(c) { shared } : Array.new(c) { sub[:make].call }
-      run(objs, sub, mode, per).per_op_us * 1000
+      run(make_objs(c, sub, cond), sub, mode, per).per_op_us * 1000
     end
   end
 end
@@ -221,9 +263,7 @@ CS.each do |c|
   printf("%-32s %12s %12s\n", "C=#{c}", "conflict", "no conflict")
   FAST_PATH.each do |sub|
     row = [:conflict, :noconflict].map do |cond|
-      shared = sub[:make].call
-      objs = cond == :conflict ? Array.new(c) { shared } : Array.new(c) { sub[:make].call }
-      run_fast_path(objs, sub, FAST).per_op_us * 1000
+      run_fast_path(make_objs(c, sub, cond), sub, FAST).per_op_us * 1000
     end
     printf("%-32s %10.0f ns %9.0f ns\n", sub[:label], row[0], row[1])
   end

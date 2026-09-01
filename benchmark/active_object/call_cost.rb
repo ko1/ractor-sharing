@@ -89,8 +89,10 @@ puts bline("ao future (value)", bmeasure(N) { N.times { c.bump_f.value } })
 # 投げてから後でまとめて回収する形。future の意味はこちら。
 DEPTH = Integer(ENV.fetch("DEPTH", 64))
 bwarm(500).times { c.bump_f.value }
-m = bmeasure(N) do
-  (N / DEPTH).times do
+batches = [N / DEPTH, 1].max      # 分母は実際に投げた数。N/DEPTH の切り捨てを
+done = batches * DEPTH            # 分母に入れると 1 回あたりが安く出る
+m = bmeasure(done) do
+  batches.times do
     fs = DEPTH.times.map { c.bump_f }
     fs.each(&:wait)
   end

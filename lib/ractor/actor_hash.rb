@@ -71,10 +71,13 @@ class Ractor
       def future_call(*args, &block) = future_send(:__call__, isolate(block), args)
 
       def fetch(key, *default, &block)
+        raise ArgumentError, "wrong number of arguments (given #{default.size + 1}, expected 1..2)" if default.size > 1
+
         found, value = sync_send(:__lookup__, key)
         return value if found
+        return block.call(key) if block   # Hash#fetch prefers the block too
         return default.first if default.size == 1
-        return block.call(key) if block
+
         raise KeyError.new("key not found: #{key.inspect}", key: key, receiver: self)
       end
 
@@ -82,8 +85,12 @@ class Ractor
 
       private
 
+      # A block that is already shareable is already isolated; making another one
+      # allocates a Proc on every call, which on a hot path is most of the cost.
       def isolate(block)
         raise LocalJumpError, "no block given (yield)" unless block
+        return block if Ractor.shareable?(block)
+
         Ractor.shareable_proc(&block)
       end
     end
