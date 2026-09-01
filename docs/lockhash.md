@@ -38,7 +38,7 @@ h = Ractor::LockHash.new(initial = nil)
 h[key]                # read
 h.fetch(key, default) # read, with the usual default / block / KeyError
 h.key?(key)
-h.keys / h.to_h       # a frozen, shareable snapshot of the whole hash
+h.keys / h.to_h       # a copy of the whole hash as it was at one moment
 h.inspect
 
 h.synchronize {|h| ... }   # the only place writes are allowed; yields the LockHash
@@ -55,7 +55,10 @@ that block **after** the lookup has released the lock, so a default that reads
 this hash again is fine.
 
 Keys and values must be **shareable**; `ArgumentError` otherwise. The LockHash
-itself is frozen and shareable, so it can be passed to any Ractor.
+itself is frozen and shareable, so it can be passed to any Ractor. `keys` and
+`to_h` return plain mutable copies, yours to reshape; everything inside them is
+shareable already, so `Ractor.make_shareable(h.to_h)` is all it takes to hand
+one to another Ractor.
 
 ### Writes only inside `synchronize`
 

@@ -210,7 +210,7 @@ lockhash_collect_pair(st_data_t key, st_data_t value, st_data_t hash)
     return ST_CONTINUE;
 }
 
-/* A Hash of the entries as they are now; the caller freezes it if it escapes. */
+/* A Hash of the entries as they are now, owned by the calling Ractor. */
 static VALUE
 lockhash_snapshot(VALUE self)
 {
@@ -225,14 +225,14 @@ lockhash_keys_body(VALUE ptr)
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     VALUE keys = rb_ary_new_capa(lockhash_ptr(arg->self)->tbl->num_entries);
     st_foreach(lockhash_ptr(arg->self)->tbl, lockhash_collect_key, (st_data_t)keys);
-    return rb_ractor_make_shareable(keys);
+    return keys;
 }
 
 static VALUE
 lockhash_to_h_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
-    return rb_ractor_make_shareable(lockhash_snapshot(arg->self));
+    return lockhash_snapshot(arg->self);
 }
 
 static VALUE
@@ -289,8 +289,11 @@ lockhash_key_p(VALUE self, VALUE key)
  *     lockhash.keys -> array
  *     lockhash.to_h -> hash
  *
- *  A snapshot taken under the lock, frozen and shareable, of the whole hash as
- *  it was at one moment.
+ *  A snapshot taken under the lock of the whole hash as it was at one moment:
+ *  a plain mutable copy, the caller's own.  Not frozen -- freezing protected
+ *  nothing (the LockHash never sees the copy again) and only stopped the
+ *  caller reshaping it.  Everything inside is shareable, so make_shareable is
+ *  one cheap call away when it has to cross to another Ractor.
  */
 static VALUE
 lockhash_keys(VALUE self)

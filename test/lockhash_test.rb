@@ -92,10 +92,16 @@ class LockHashTest < Test::Unit::TestCase
     assert_equal :from_block, @h.fetch(:z, :from_default) { :from_block }
   end
 
-  def test_snapshots_are_shareable
-    assert_true @h.to_h.frozen?
-    assert_true Ractor.shareable?(@h.to_h)
-    assert_true Ractor.shareable?(@h.keys)
+  def test_snapshots_are_plain_detached_copies
+    snap = @h.to_h
+    assert_false snap.frozen?, "the copy is the caller's own, not frozen"
+    snap[:b] = 2
+    assert_equal({ a: 1 }, @h.to_h, "reshaping the copy does not reach the hash"
+    )
+    ks = @h.keys
+    assert_false ks.frozen?
+    ks << :zz
+    assert_equal [:a], @h.keys
   end
 
   def test_lockhash_is_frozen_and_shareable
