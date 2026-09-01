@@ -115,6 +115,34 @@ h[:log]
 ```
 
 
+## Performance
+
+Nanoseconds for one operation, counted across all Ractors, on 16 cores.
+
+| | one Ractor | 16 on one object | 16 on their own | spreading out |
+|---|---:|---:|---:|---|
+| `TVar#increment` | 60 | **157** | 79 | does not help |
+| `LockVar#increment` | 121 | 426 | **16** | 7.6× faster |
+| `LockHash#synchronize` | 192 | 628 | 25 | 7.7× faster |
+| `ActiveObject` sync method | 2202 | 1380 | 713 | 3.1× faster |
+| `ActorHash#call` | 3197 | 2043 | 789 | 4.1× faster |
+| no sharing at all | 24 | n/a | 3 | 8× faster |
+
+Three things to read off it. **Spread out, the locks scale as far as the machine
+does** and `TVar` does not, because every committing transaction takes one
+process-wide lock to allocate its version number. **Fought over, `TVar` wins**,
+because losing a race and retrying an operation that small is cheaper than
+parking a thread and waking it. **The two that keep a Ractor cost microseconds
+either way**, and a Ractor each.
+
+The last row is the machine's own ceiling: 8× is as far as anything here scales.
+Called from the main Ractor rather than a worker, the last two cost about 8.9 µs
+instead of 2, because that thread has a native thread to itself and waking it is
+a syscall.
+
+`benchmark/family.rb` produces this table; the full sweep and the conditions are
+in `~/ruby/src/trials/ractor-sharing-family/`.
+
 ## What is not here
 
 These classes hold state. They are not a way for Ractors to wait for each other.
