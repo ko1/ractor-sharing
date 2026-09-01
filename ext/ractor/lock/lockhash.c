@@ -1,12 +1,18 @@
 #include "lock.h"
+#include "ruby/st.h"
 
 /* Ractor::LockHash - a Hash several Ractors can share.
  *
- * The Hash itself never leaves: #synchronize yields the LockHash, not the Hash
- * inside it, so nothing can keep a reference and write to it later or from
- * another Ractor.  Every write goes through #synchronize, which is a critical
- * section over this one hash: whatever it changes, other Ractors see all of it
- * or none of it.
+ * The entries live in an st_table, not in a Ruby Hash.  A Hash would be an
+ * unshareable object belonging to whichever Ractor built it, and every other
+ * Ractor writing into it would be touching another Ractor's object -- a
+ * containment violation, and an edge from a shareable object to an unshareable
+ * one that only the VM can record.  Keys and values are shareable, so with a C
+ * table there is no such object at all: the container belongs to nobody.
+ *
+ * Nothing escapes either: #synchronize yields the LockHash, never the entries.
+ * Every write goes through it, and it is a critical section over this one hash:
+ * whatever it changes, other Ractors see all of it or none of it.
  *
  * That atomicity costs parallelism.  One lock covers the whole hash, so writes
  * to unrelated keys wait for each other; a hash that has to be written to
@@ -15,22 +21,51 @@
  */
 
 static VALUE rb_cRactorLockHash;
-static ID id_keys, id_zero_p;
 
 struct lockhash {
-    VALUE hash;                 /* the real Hash; hidden from everyone */
+    st_table *tbl;              /* shareable VALUE => shareable VALUE */
     struct rs_lock lock;
 };
 
-/* The hash is deliberately *not* marked from here.  Ractor.make_shareable walks
- * a T_DATA through its mark function and freezes everything it finds, which is
- * exactly what must not happen to the hash we mean to keep mutating, so it is
- * kept alive as a GC root of its own instead. */
+/* Keys are shareable, so they are frozen and their hash is stable. */
+static st_index_t
+lockhash_key_hash(st_data_t key)
+{
+    return (st_index_t)NUM2LONG(rb_hash((VALUE)key));
+}
+
+static int
+lockhash_key_cmp(st_data_t a, st_data_t b)
+{
+    return rb_eql((VALUE)a, (VALUE)b) ? 0 : 1;
+}
+
+static const struct st_hash_type lockhash_type = {
+    lockhash_key_cmp,
+    lockhash_key_hash,
+};
+
+static int
+lockhash_mark_i(st_data_t key, st_data_t value, st_data_t arg)
+{
+    rb_gc_mark((VALUE)key);
+    rb_gc_mark((VALUE)value);
+    return ST_CONTINUE;
+}
+
+/* Everything in the table is shareable already, so Ractor.make_shareable
+ * walking in here through the mark function has nothing left to freeze. */
+static void
+lockhash_mark(void *ptr)
+{
+    st_foreach(((struct lockhash *)ptr)->tbl, lockhash_mark_i, 0);
+}
+
 static void
 lockhash_free(void *ptr)
 {
     struct lockhash *lh = ptr;
-    rb_gc_unregister_address(&lh->hash);
+    st_free_table(lh->tbl);
     rs_lock_destroy(&lh->lock);
     ruby_xfree(lh);
 }
@@ -38,12 +73,13 @@ lockhash_free(void *ptr)
 static size_t
 lockhash_memsize(const void *ptr)
 {
-    return sizeof(struct lockhash);
+    const struct lockhash *lh = ptr;
+    return sizeof(struct lockhash) + st_memsize(lh->tbl);
 }
 
 static const rb_data_type_t lockhash_data_type = {
     "Ractor::LockHash",
-    {NULL, lockhash_free, lockhash_memsize, NULL},
+    {lockhash_mark, lockhash_free, lockhash_memsize, NULL},
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_FROZEN_SHAREABLE
 };
 
@@ -88,8 +124,7 @@ lockhash_alloc(VALUE klass)
 {
     struct lockhash *lh;
     VALUE obj = TypedData_Make_Struct(klass, struct lockhash, &lockhash_data_type, lh);
-    lh->hash = rb_hash_new();
-    rb_gc_register_address(&lh->hash);
+    lh->tbl = st_init_table(&lockhash_type);
     rs_lock_init(&lh->lock);
     return obj;
 }
@@ -99,7 +134,7 @@ lockhash_copy_pair(VALUE key, VALUE value, VALUE dest)
 {
     lockhash_check_shareable(key);
     lockhash_check_shareable(value);
-    rb_hash_aset(dest, key, value);
+    st_insert(((struct lockhash *)dest)->tbl, (st_data_t)key, (st_data_t)value);
     return ST_CONTINUE;
 }
 
@@ -111,7 +146,7 @@ lockhash_initialize(int argc, VALUE *argv, VALUE self)
     rb_scan_args(argc, argv, "01", &init);
     if (!NIL_P(init)) {
         init = rb_convert_type(init, T_HASH, "Hash", "to_hash");
-        rb_hash_foreach(init, lockhash_copy_pair, lockhash_ptr(self)->hash);
+        rb_hash_foreach(init, lockhash_copy_pair, (VALUE)lockhash_ptr(self));
     }
     /* The LockHash never changes; the hash it guards does. */
     rb_obj_freeze(self);
@@ -127,12 +162,21 @@ struct lockhash_op {
     int argc;
 };
 
+/* Qundef when absent. */
+static VALUE
+lockhash_lookup(VALUE self, VALUE key)
+{
+    st_data_t found;
+    return st_lookup(lockhash_ptr(self)->tbl, (st_data_t)key, &found) ? (VALUE)found : Qundef;
+}
+
 static VALUE
 lockhash_aref_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockhash_op *op = arg->data;
-    return rb_hash_aref(lockhash_ptr(arg->self)->hash, op->key);
+    VALUE found = lockhash_lookup(arg->self, op->key);
+    return RB_UNDEF_P(found) ? Qnil : found;
 }
 
 static VALUE
@@ -140,7 +184,7 @@ lockhash_fetch_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockhash_op *op = arg->data;
-    VALUE found = rb_hash_lookup2(lockhash_ptr(arg->self)->hash, op->key, Qundef);
+    VALUE found = lockhash_lookup(arg->self, op->key);
 
     if (!RB_UNDEF_P(found)) return found;
     if (op->argc > 1) return op->value;
@@ -153,29 +197,53 @@ lockhash_key_p_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockhash_op *op = arg->data;
-    return RB_UNDEF_P(rb_hash_lookup2(lockhash_ptr(arg->self)->hash, op->key, Qundef))
-           ? Qfalse : Qtrue;
+    return RB_UNDEF_P(lockhash_lookup(arg->self, op->key)) ? Qfalse : Qtrue;
 }
 
 static VALUE
 lockhash_size_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
-    return rb_hash_size(lockhash_ptr(arg->self)->hash);
+    return LONG2FIX(lockhash_ptr(arg->self)->tbl->num_entries);
+}
+
+static int
+lockhash_collect_key(st_data_t key, st_data_t value, st_data_t ary)
+{
+    rb_ary_push((VALUE)ary, (VALUE)key);
+    return ST_CONTINUE;
+}
+
+static int
+lockhash_collect_pair(st_data_t key, st_data_t value, st_data_t hash)
+{
+    rb_hash_aset((VALUE)hash, (VALUE)key, (VALUE)value);
+    return ST_CONTINUE;
+}
+
+/* A Hash of the entries as they are now; the caller freezes it if it escapes. */
+static VALUE
+lockhash_snapshot(VALUE self)
+{
+    VALUE hash = rb_hash_new();
+    st_foreach(lockhash_ptr(self)->tbl, lockhash_collect_pair, (st_data_t)hash);
+    return hash;
 }
 
 static VALUE
 lockhash_keys_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
-    return rb_ractor_make_shareable(rb_funcall(lockhash_ptr(arg->self)->hash, id_keys, 0));
+    VALUE keys = rb_ary_new_capa(lockhash_ptr(arg->self)->tbl->num_entries);
+    st_foreach(lockhash_ptr(arg->self)->tbl, lockhash_collect_key, (st_data_t)keys);
+    return rb_ractor_make_shareable(keys);
 }
 
 static VALUE
 lockhash_to_h_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
-    return rb_ractor_make_shareable(rb_obj_dup(lockhash_ptr(arg->self)->hash));
+    return rb_ractor_make_shareable(lockhash_snapshot(arg->self));
 }
 
 static VALUE
@@ -228,7 +296,7 @@ lockhash_size(VALUE self)
 static VALUE
 lockhash_empty_p(VALUE self)
 {
-    return RTEST(rb_funcall(lockhash_size(self), id_zero_p, 0)) ? Qtrue : Qfalse;
+    return lockhash_ptr(self)->tbl->num_entries == 0 ? Qtrue : Qfalse;
 }
 
 /*
@@ -266,22 +334,26 @@ lockhash_aset(VALUE self, VALUE key, VALUE value)
     lockhash_check_writable(self, "[]=");
     lockhash_check_shareable(key);
     lockhash_check_shareable(value);
-    rb_hash_aset(lockhash_ptr(self)->hash, key, value);
+    st_insert(lockhash_ptr(self)->tbl, (st_data_t)key, (st_data_t)value);
+    RB_OBJ_WRITTEN(self, Qundef, key);
+    RB_OBJ_WRITTEN(self, Qundef, value);
     return value;
 }
 
 static VALUE
 lockhash_delete(VALUE self, VALUE key)
 {
+    st_data_t k = (st_data_t)key, v;
+
     lockhash_check_writable(self, "delete");
-    return rb_hash_delete(lockhash_ptr(self)->hash, key);
+    return st_delete(lockhash_ptr(self)->tbl, &k, &v) ? (VALUE)v : Qnil;
 }
 
 static VALUE
 lockhash_clear(VALUE self)
 {
     lockhash_check_writable(self, "clear");
-    rb_hash_clear(lockhash_ptr(self)->hash);
+    st_clear(lockhash_ptr(self)->tbl);
     return self;
 }
 
@@ -305,18 +377,30 @@ lockhash_synchronize(VALUE self)
 }
 
 static VALUE
+lockhash_inspect_body(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+    return rb_sprintf("#<%"PRIsVALUE" %+"PRIsVALUE">",
+                      rb_obj_class(arg->self), lockhash_snapshot(arg->self));
+}
+
+/* Reading the table needs the lock, so inspect takes it -- unless this thread
+ * is inside some other lock, where taking it could deadlock and inspect must
+ * not raise either.  Then it just says nothing about the contents. */
+static VALUE
 lockhash_inspect(VALUE self)
 {
-    return rb_sprintf("#<%"PRIsVALUE" %+"PRIsVALUE">",
-                      rb_obj_class(self), lockhash_ptr(self)->hash);
+    VALUE held = rs_held(rb_thread_current());
+
+    if (!NIL_P(held) && held != self) {
+        return rb_sprintf("#<%"PRIsVALUE" ...>", rb_obj_class(self));
+    }
+    return LOCKHASH_READ(self, lockhash_inspect_body, NULL);
 }
 
 void
 Init_lockhash_class(void)
 {
-    id_keys = rb_intern("keys");
-    id_zero_p = rb_intern("zero?");
-
     rb_cRactorLockHash = rb_define_class_under(rb_cRactor, "LockHash", rb_cObject);
     rb_define_alloc_func(rb_cRactorLockHash, lockhash_alloc);
     rb_define_method(rb_cRactorLockHash, "initialize", lockhash_initialize, -1);
