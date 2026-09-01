@@ -262,6 +262,10 @@ tx_mark(void *ptr)
 
     for (uint32_t i=0; i<tx->logs_cnt; i++) {
         rb_gc_mark(tx->logs[i].value);
+        /* The slot is plain memory owned by the TVar: unmarked, a TVar reachable
+         * only from a transaction in flight is collected and the commit locks a
+         * freed mutex. */
+        rb_gc_mark(tx->logs[i].tvar);
     }
 }
 

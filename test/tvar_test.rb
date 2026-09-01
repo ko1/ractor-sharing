@@ -101,6 +101,21 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_equal 2, tv.value
   end
 
+  test "a TVar reachable only from a transaction in flight survives a GC" do
+    # The transaction log holds a raw pointer to the TVar's slot and the TVar
+    # itself to keep it alive. The TVar went unmarked, so a GC here freed the
+    # slot and the commit locked a mutex that was no longer there.
+    50.times do
+      Ractor.atomically do
+        tv = Ractor::TVar.new(1)
+        tv.value = 2
+        tv = nil
+        GC.start(full_mark: true, immediate_sweep: true)
+      end
+    end
+    assert_true true, "did not crash"
+  end
+
   test "increment rejects an unshareable sum, inside a transaction as well as out" do
     # The in-transaction path called + and stored whatever came back. A TVar only
     # ever holds shareable values, and the sum of two frozen arrays is not one.
