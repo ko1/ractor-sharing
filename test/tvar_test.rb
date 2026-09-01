@@ -204,26 +204,32 @@ class Ractor::TVarTest < Test::Unit::TestCase
   # documented hazard itself -- a side effect in the block happens again on
   # every retry.
   test "a block may run more than once, so keep it free of side effects" do
-    # Contention makes a retry very likely but never certain: a schedule where
-    # every transaction commits unopposed is legal, and it does turn up. Try
-    # again rather than assert a coin flip.
-    total = 4 * 200
-    extra = 0
-    5.times do
-      runs = Ractor::LockVar.new(0)
-      tv = Ractor::TVar.new(0)
-      rs = 4.times.map do
-        Ractor.new(tv, runs) do |t, r|
-          200.times { Ractor.atomically { r.increment; t.value += 1 } }
-          :ok
+    # Not left to a race: contention makes a retry likely but never certain, and
+    # on a single CPU the transactions just serialize (this assertion used to
+    # fail every run there). Instead the conflict is staged: the transaction
+    # reads, then pauses while another commit lands, so its own commit must
+    # retry. Deterministic on any core count.
+    tv = Ractor::TVar.new(0)
+    runs = 0
+    read = Queue.new
+    resume = Queue.new
+    t = Thread.new do
+      Ractor.atomically do
+        runs += 1
+        v = tv.value
+        if runs == 1
+          read << :read      # first run only: let the other commit in between
+          resume.pop
         end
+        tv.value = v + 1
       end
-      rs.each(&:join)
-      assert_equal total, tv.value, "every increment landed exactly once"
-      extra = runs.value - total
-      break if extra > 0
     end
-    assert_operator extra, :>, 0, "in five tries no transaction ever ran its block twice"
+    read.pop
+    Ractor.atomically { tv.value += 10 }   # invalidates what the block read
+    resume << :go
+    t.join
+    assert_operator runs, :>, 1, "the block ran again after losing the race"
+    assert_equal 11, tv.value, "and the losing run's write was discarded"
   end
 
   test "the transaction errors exist" do

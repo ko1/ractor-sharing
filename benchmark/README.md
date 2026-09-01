@@ -19,7 +19,13 @@ ruby family.rb                  # C = 1,2,4,8,16 を掃く
 BENCH_C=8 ruby family.rb        # 8 だけ
 BENCH_CS=1,16 ruby family.rb    # 指定した並行度だけ
 BENCH_SCALE=10 ruby family.rb   # 仕事量を 1/10 に（動作確認用）
+REPS=3 ruby family.rb           # 各セル 3 回、中央値を表に出す
+PART=fastpath ruby family.rb    # increment の近道の表だけ（record で逆）
 ```
+
+`REPS>1` のとき、最後に **run 間のばらつき**を 1 行出す（中央値と最悪セル）。
+公開している数字は `REPS=3` の中央値。1 回計測の数字は差なのかばらつきなのか
+読めないので、比較に使うなら `REPS` を付けること。
 
 仕事は **共有された 1 個のレコードの読み書き**。値は凍った Hash
 `{status:, seq:}` で、write はそれを新しい凍った Hash に差し替える、read はそれ

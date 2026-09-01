@@ -233,9 +233,15 @@ end
 # 1 セルを REPS 回まわして中央値。ばらつきは $spread に貯めて最後に出す。
 $spread = []
 
+# 偶数個でも本物の中央値（真ん中 2 つの平均）。size/2 だけだと max of 2 になる。
+def median(vals)
+  h = vals.size / 2
+  vals.size.odd? ? vals[h] : (vals[h - 1] + vals[h]) / 2.0
+end
+
 def cell(c, sub, mode, cond, per)
   vals = REPS.times.map { run(make_objs(c, sub, cond), sub, mode, per).per_op_us * 1000 }.sort
-  med = vals[vals.size / 2]
+  med = median(vals)
   $spread << [(vals.last - vals.first) / med, "#{sub[:label]} #{mode}/#{cond} C=#{c}"] if REPS > 1 && med > 0
   med
 end
@@ -272,7 +278,7 @@ CS.each do |c|
   FAST_PATH.each do |sub|
     row = [:conflict, :noconflict].map do |cond|
       vals = REPS.times.map { run_fast_path(make_objs(c, sub, cond), sub, FAST).per_op_us * 1000 }.sort
-      med = vals[vals.size / 2]
+      med = median(vals)
       $spread << [(vals.last - vals.first) / med, "#{sub[:label]} #{cond} C=#{c}"] if REPS > 1 && med > 0
       med
     end

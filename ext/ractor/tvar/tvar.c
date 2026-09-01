@@ -816,7 +816,8 @@ Init_tvar(void)
     rb_gc_register_mark_object(rb_exc_tx_retry);
 
     // TxLogs
-    rb_cRactorTxLogs = rb_define_class_under(rb_cRactor, "TxLogs", rb_cObject); // hidden object
+    rb_cRactorTxLogs = rb_define_class_under(rb_cRactor, "TxLogs", rb_cObject);
+    rb_undef_alloc_func(rb_cRactorTxLogs);   /* internal; made only by tx_logs() */ // hidden object
 
     // TVar APIs
     rb_define_singleton_method(rb_cRactor, "atomically", tx_atomically, 0);

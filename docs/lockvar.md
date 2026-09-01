@@ -126,7 +126,7 @@ The unit here is a single variable. That is the whole distinction between this
 and its neighbour, not optimistic versus pessimistic, which is only how each one
 happens to be built.
 
-| | `Ractor::LockVar` | [`Ractor::TVar`](https://github.com/ko1/ractor-tvar) |
+| | `Ractor::LockVar` | [`Ractor::TVar`](tvar.md) |
 |---|---|---|
 | synchronizes | one variable | several variables together |
 | written as | `lv.update {\|v\| ... }` | `Ractor.atomically { ... }` |
