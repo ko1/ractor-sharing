@@ -52,6 +52,15 @@ table, give the object a Ractor of its own. It never leaves; callers send method
 calls in, the owner runs them one at a time, and the object goes on being an
 ordinary mutable Ruby object.
 
+Know what that costs. Each instance **starts a Ractor**, which lives until the
+process ends — there is no way to stop one — so this is for a handful of
+long-lived objects, not for many small ones. And every call from another Ractor
+is a message round trip: about **8.7 µs**, against **0.12 µs** for an
+uncontended `LockVar#update` on the same machine, some seventy times more. Calls
+to one object are also serialized through its owner, so the object is a
+throughput limit as well as a home for the state. If your state does fit in a
+shareable value, one of the other two will cost you far less.
+
 ```ruby
 class People < Ractor::ActiveObject
   def initialize = @db = {}

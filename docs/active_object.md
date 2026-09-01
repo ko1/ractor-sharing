@@ -43,6 +43,21 @@ end.join
 
 Requires Ruby 4.0 or later (`Ractor::Port`).
 
+## What it costs
+
+Each instance starts a Ractor of its own, and that Ractor runs until the process
+ends: there is no shutdown. Creating active objects in a loop leaks them.
+
+Every call from another Ractor is a message round trip — about **8.7 µs**
+measured on 16 cores, where an uncontended `Ractor::LockVar#update` on the same
+machine is **0.12 µs**. Calls to one object run one at a time on its owner, so a
+single hot object caps how fast callers get through it.
+
+None of that applies to calls made *inside* the owner: those are plain Ruby
+calls. And if the state you are guarding fits in a shareable value,
+[`Ractor::LockVar`](lockvar.md) or [`Ractor::TVar`](tvar.md) will be much
+cheaper.
+
 ## Invocation policies
 
 | modifier | explicit form          | caller waits? | returns              | exception                     |
