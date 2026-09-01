@@ -1,10 +1,8 @@
 # benchmark/
 
-`ractor-sharing` のベンチマーク。Ractor / M:N そのものを測る汎用ベンチは
-`~/ruby/src/rlgc/benchmark/` にあり、このディレクトリはそこの `apps.tsv` に
-登録してある。
+`ractor-sharing` のベンチマーク。
 
-規約は汎用側と同じ: **1 ワークロードにつき harness は 1 本、その 1 本が
+規約は **1 ワークロードにつき harness は 1 本、その 1 本が
 wall / 呼び手 CPU / プロセス CPU / RSS / GC を全部出す**（`lib/bench.rb` の
 `bmeasure`）。パラメータは env、`BENCH_SCALE=%` で仕事量、`BENCH_C` で並行度。
 

@@ -1,10 +1,8 @@
 # benchmark/
 
-`Ractor::ActiveObject` の API に依存するベンチマーク。Ractor / M:N そのものを測る
-汎用ベンチは `~/ruby/src/rlgc/benchmark/` にあり、このディレクトリはそこの
-`apps.tsv` に登録してある（`runner/apps.sh` で一覧が出る）。
+`Ractor::ActiveObject` の API に依存するベンチマーク。
 
-規約は汎用側と同じ: **1 ワークロードにつき harness は 1 本、その 1 本が
+規約は **1 ワークロードにつき harness は 1 本、その 1 本が
 wall / 呼び手 CPU / プロセス CPU / RSS / GC を全部出す**（`lib/bench.rb` の
 `bmeasure`）。パラメータは env、`BENCH_SCALE=%` で仕事量、`BENCH_C` で並行度。
 
@@ -50,5 +48,4 @@ wall / 呼び手 CPU / プロセス CPU / RSS / GC を全部出す**（`lib/benc
 
 ## 測るときの作法
 
-汎用側 `~/ruby/src/rlgc/benchmark/README.md` の「計測の作法」に従う。中央値 + min-max、
-A/B は交互に、専用箱 sp4 は `bench-lease claim/check/release`。
+中央値 + min-max、A/B は交互に、計測用の箱は排他を取ってから。

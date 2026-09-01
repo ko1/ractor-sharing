@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 #
-# このディレクトリ共通の計測レイヤ。規約は ~/ruby/src/rlgc/benchmark/ と同じ:
+# このディレクトリ共通の計測レイヤ。規約は
 # **1 ワークロードにつき harness は 1 本、その 1 本が wall / 呼び手 CPU /
 # プロセス CPU / RSS / GC を全部出す。** 指標ごとにベンチを分けない。
 #

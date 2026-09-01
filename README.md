@@ -140,8 +140,9 @@ Called from the main Ractor rather than a worker, the last two cost about 8.9 µ
 instead of 2, because that thread has a native thread to itself and waking it is
 a syscall.
 
-`benchmark/family.rb` produces this table; the full sweep and the conditions are
-in `~/ruby/src/trials/ractor-sharing-family/`.
+`benchmark/family.rb` produces this table, and sweeps 1, 2, 4, 8 and 16 Ractors
+under both conditions. These numbers are from ruby 4.1.0dev (master 69b49ac7ae)
+on 16 cores with the CPU governor fixed at `performance`, one run per cell.
 
 ## What is not here
 

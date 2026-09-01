@@ -1,10 +1,8 @@
 # benchmark/
 
-`Ractor::TVar`（Ractor / Thread 向け STM）のベンチマーク。Ractor / M:N そのものを
-測る汎用ベンチは `~/ruby/src/rlgc/benchmark/` にあり、このディレクトリはそこの
-`apps.tsv` に登録してある（`runner/apps.sh` で一覧が出る）。
+`Ractor::TVar`（Ractor / Thread 向け STM）のベンチマーク。
 
-規約は汎用側と同じ: **1 ワークロードにつき harness は 1 本、その 1 本が
+規約は **1 ワークロードにつき harness は 1 本、その 1 本が
 wall / 呼び手 CPU / プロセス CPU / RSS を全部出す**（`lib/bench.rb` の `bmeasure`）。
 パラメータは env、`BENCH_SCALE=%` で仕事量、`BENCH_C` で並行度。
 

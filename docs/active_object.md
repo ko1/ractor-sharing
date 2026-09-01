@@ -139,8 +139,7 @@ per-call `Ractor.select`, or `Ractor#monitor` on the reply port, but
 reply ports would have to be pooled per owner, and that bookkeeping costs the
 same ≈4 %. (`Port#close` is not an option: it cannot be called from another
 Ractor, and even from the owning Ractor it does not wake a thread already
-blocked in `receive`.) Both were measured and rejected; see
-`~/ruby/src/trials/ractor-activeobject-reply-wait/`.
+blocked in `receive`.) Both were measured and rejected.
 
 ### Futures
 

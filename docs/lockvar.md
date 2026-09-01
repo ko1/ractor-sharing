@@ -174,8 +174,9 @@ invalidate it.
 ## Performance
 
 Numbers are **ns per completed operation across all Ractors**, so one that halves
-when the Ractors double means it scaled. Measured on 16 cores; sources and
-conditions in `~/ruby/src/trials/ractor-lockvar-vs-tvar/`.
+when the Ractors double means it scaled. Measured on 16 cores with the CPU
+governor fixed at `performance`, on ruby 4.1.0dev; `benchmark/family.rb` runs the
+same comparison.
 
 ### Independent variables, one per Ractor
 
