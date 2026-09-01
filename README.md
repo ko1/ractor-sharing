@@ -1,0 +1,75 @@
+# ractor-sharing
+
+Ways for Ractors to share mutable state.
+
+Ractors keep their objects to themselves. What crosses between them is either
+frozen or copied, so there is nowhere to put a counter, a registry or a cache
+that several Ractors both read and change. Each class here is such a place: a
+shareable object holding state that any Ractor may read and change, safely.
+
+They differ in how much state changes at a time. That is what picks one:
+
+| | changes at a time | you write |
+|---|---|---|
+| [`Ractor::LockVar`](docs/lockvar.md) | one variable | `lv.update {\|v\| v + 1 }` |
+| [`Ractor::TVar`](docs/tvar.md) | several variables, together | `Ractor.atomically { a.value += 1; b.value -= 1 }` |
+| [`Ractor::ActiveObject`](docs/active_object.md) | a whole object graph | `sync def add(k, v) = @db[k] = v` |
+
+```ruby
+require "ractor/sharing"   # or one at a time: "ractor/lockvar", "ractor/tvar", "ractor/active_object"
+```
+
+## Which one
+
+**One variable — `LockVar`.** A counter, a flag, the current configuration.
+`update` reads it, runs your block and writes the result back, and your block
+runs exactly once, so it may have side effects.
+
+```ruby
+counter = Ractor::LockVar.new(0)
+4.times.map { Ractor.new(counter) {|c| 1000.times { c.increment } } }.each(&:join)
+counter.value #=> 4000
+```
+
+**Several variables that must agree — `TVar`.** Moving a balance from one
+account to another: either both variables change or neither does. A transaction
+that loses a race is rolled back and run again, so its block must be safe to run
+twice.
+
+```ruby
+from, to = Ractor::TVar.new(100), Ractor::TVar.new(0)
+Ractor.atomically { from.value -= 10; to.value += 10 }
+```
+
+**A whole object graph — `ActiveObject`.** When the state is not one value but a
+collection with methods over it, give it to a Ractor of its own and send it the
+work instead of the data.
+
+```ruby
+class People < Ractor::ActiveObject
+  def initialize = @db = {}
+  async def add(name, age) = @db[name] = age
+  sync  def find(name) = @db[name]
+end
+```
+
+Reaching for two `LockVar`s at once is refused, with a message pointing here:
+that is the sign you wanted a `TVar`. Reaching for a variable that has methods
+of its own is the sign you wanted an `ActiveObject`.
+
+## Requirements
+
+Ruby 4.0 or later (`Ractor::Port`, and Ractors that are worth using).
+
+## Development
+
+```
+rake            # compile both extensions and run every test
+```
+
+Documentation for each class is in [docs/](docs/); `docs/active_object-design.md`
+is the design note `ActiveObject` was built from.
+
+## License
+
+MIT. See [LICENSE.txt](LICENSE.txt).

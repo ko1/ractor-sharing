@@ -1,0 +1,7 @@
+/pkg/
+/tmp/
+/lib/ractor/*.so
+/Gemfile.lock
+*.o
+Makefile
+mkmf.log
