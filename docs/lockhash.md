@@ -70,6 +70,21 @@ h[:hits] = h[:hits] + 1                        # refused, and it was a lost upda
 The block is handed the LockHash, **never the Hash inside it**, so no reference
 to the state can escape and be written to later, or from another Ractor.
 
+### The two idioms
+
+Almost everything a shared hash gets used for is one of these, and both are one
+`synchronize`:
+
+```ruby
+h.synchronize {|h| h[k] ||= expensive }          # memoize: computed once, by one caller
+h.synchronize {|h| h[k] = (h[k] || 0) + 1 }      # count: read and write in one step
+```
+
+There is no `compute` or `fetch_or_store` here. One lock covers the whole hash,
+so a dedicated method for one key would run at exactly the same speed as the
+block above, and only spend a name. Such methods start to mean something when a
+lock can be taken per key, and this one is not — see below.
+
 ### What one `synchronize` gives you
 
 Everything it changes becomes visible together. A reader calling `[]` or `to_h`
