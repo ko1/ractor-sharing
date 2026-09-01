@@ -2,6 +2,7 @@
 
 require_relative "sharing/version"
 require_relative "lockvar"
+require_relative "lockhash"
 require_relative "tvar"
 require_relative "active_object"
 
@@ -11,6 +12,7 @@ class Ractor
   # state moves at once:
   #
   #   Ractor::LockVar       one variable
+  #   Ractor::LockHash      a hash, atomic across its own keys
   #   Ractor::TVar          several variables, changed together
   #   Ractor::ActiveObject  a whole object graph, owned by one Ractor
   #

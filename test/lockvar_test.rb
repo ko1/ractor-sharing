@@ -163,7 +163,7 @@ class LockVarTest < Test::Unit::TestCase
 
   def test_increment_inside_an_update_is_refused
     lv = Ractor::LockVar.new(0)
-    assert_raise(Ractor::LockVar::NestedLockError) { lv.update { |v| lv.increment } }
+    assert_raise(Ractor::NestedLockError) { lv.update { |v| lv.increment } }
     assert_equal 0, lv.value
     assert_acquirable lv
   end
@@ -172,7 +172,7 @@ class LockVarTest < Test::Unit::TestCase
 
   def test_value_inside_its_own_update_is_refused
     lv = Ractor::LockVar.new(7)
-    e = assert_raise(Ractor::LockVar::NestedLockError) { lv.update { |v| lv.value } }
+    e = assert_raise(Ractor::NestedLockError) { lv.update { |v| lv.value } }
     assert_match(/given that value already/, e.message)
     assert_acquirable lv
   end
@@ -229,7 +229,7 @@ class LockVarTest < Test::Unit::TestCase
 
   def test_reentrant_update_is_refused
     lv = Ractor::LockVar.new(0)
-    e = assert_raise(Ractor::LockVar::NestedLockError) { lv.update { lv.update { 9 } } }
+    e = assert_raise(Ractor::NestedLockError) { lv.update { lv.update { 9 } } }
     assert_match(/discarded by the outer block/, e.message)
     assert_equal 0, lv.value
     assert_acquirable lv
@@ -238,15 +238,15 @@ class LockVarTest < Test::Unit::TestCase
   def test_touching_a_different_lockvar_while_updating_raises
     a = Ractor::LockVar.new(0)
     b = Ractor::LockVar.new(9)
-    e = assert_raise(Ractor::LockVar::NestedLockError) { a.update { |v| b.update { 1 }; v } }
+    e = assert_raise(Ractor::NestedLockError) { a.update { |v| b.update { 1 }; v } }
     assert_match(/TVar/, e.message)
-    assert_raise(Ractor::LockVar::NestedLockError) { a.update { |v| b.value } }
+    assert_raise(Ractor::NestedLockError) { a.update { |v| b.value } }
     assert_acquirable a
     assert_acquirable b
   end
 
   def test_nesting_error_is_a_thread_error
-    assert_operator Ractor::LockVar::NestedLockError, :<, ThreadError
+    assert_operator Ractor::NestedLockError, :<, ThreadError
   end
 
   def test_no_lockvar_can_be_touched_inside_an_update
@@ -254,7 +254,7 @@ class LockVarTest < Test::Unit::TestCase
     other = Ractor::LockVar.new(1)
     [->{ lv.value }, ->{ lv.update { 9 } },
      ->{ other.value }, ->{ other.update { 9 } }].each do |op|
-      assert_raise(Ractor::LockVar::NestedLockError) { lv.update { |v| op.call } }
+      assert_raise(Ractor::NestedLockError) { lv.update { |v| op.call } }
     end
     assert_equal 0, lv.value
     assert_equal 1, other.value

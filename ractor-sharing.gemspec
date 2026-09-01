@@ -14,7 +14,7 @@ Gem::Specification.new do |spec|
   spec.homepage = "https://github.com/ko1/ractor-sharing"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 4.0"
-  spec.extensions = %w[ext/ractor/tvar/extconf.rb ext/ractor/lockvar/extconf.rb]
+  spec.extensions = %w[ext/ractor/tvar/extconf.rb ext/ractor/lock/extconf.rb]
 
   spec.metadata["source_code_uri"] = spec.homepage
   spec.files = Dir["lib/**/*.rb", "ext/**/*.{c,rb}", "docs/*.md", "README.md", "LICENSE.txt"]

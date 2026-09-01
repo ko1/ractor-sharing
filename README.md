@@ -11,6 +11,7 @@ What picks one is the state you have:
 | | holds | you write |
 |---|---|---|
 | [`Ractor::LockVar`](docs/lockvar.md) | one shareable value | `lv.update {\|v\| v + 1 }` |
+| [`Ractor::LockHash`](docs/lockhash.md) | a hash of shareable values, atomic across its own keys | `h.synchronize {\|h\| h[k] = v }` |
 | [`Ractor::TVar`](docs/tvar.md) | several shareable values, changed together | `Ractor.atomically { a.value += 1; b.value -= 1 }` |
 | [`Ractor::ActiveObject`](docs/active_object.md) | a mutable object, kept unshareable | `sync def add(k, v) = @db[k] = v` |
 
@@ -35,6 +36,16 @@ runs exactly once, so it may have side effects.
 counter = Ractor::LockVar.new(0)
 4.times.map { Ractor.new(counter) {|c| 1000.times { c.increment } } }.each(&:join)
 counter.value #=> 4000
+```
+
+**A hash — `LockHash`.** A registry, a cache, a scoreboard each worker writes a
+row of. Reads need no ceremony; writes go inside `synchronize`, and everything
+one section changes appears at once. Atomic across its own keys, and only those.
+
+```ruby
+board = Ractor::LockHash.new
+board.synchronize {|b| b[:me] = score }
+board.to_h
 ```
 
 **Several variables that must agree — `TVar`.** Moving a balance from one

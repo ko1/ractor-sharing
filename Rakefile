@@ -10,7 +10,7 @@ Rake::TestTask.new(:test) do |t|
 end
 
 Rake::ExtensionTask.new("ractor/tvar")
-Rake::ExtensionTask.new("ractor/lockvar")
+Rake::ExtensionTask.new("ractor/lock")
 
 task test: :compile
 task default: :test

@@ -2,8 +2,8 @@
 
 **One** variable that Ractors can share. It holds one shareable object; any
 Ractor can read it, and any Ractor can replace what is in it, one at a time.
-Several variables that have to change together are `Ractor::TVar`'s job, not
-this one's.
+Several variables that have to change together are `Ractor::TVar`'s job, and a
+whole hash of them is [`Ractor::LockHash`](lockhash.md)'s.
 
 ```ruby
 require "ractor/lockvar"
