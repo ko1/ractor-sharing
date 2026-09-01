@@ -292,8 +292,11 @@ class Ractor
 
       # Backtraces are lost when exceptions cross Ractors; rebuild: owner frames, then caller frames.
       def __ao_restore_exception__(exc, backtrace)
+        exc = exc.dup if exc.frozen?   # a frozen shareable exception crosses by reference
         exc.set_backtrace(Array(backtrace) + caller(2))
         exc
+      rescue FrozenError
+        exc                            # un-dupable: better without the backtrace than masked
       end
     end
 

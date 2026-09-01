@@ -77,7 +77,7 @@ cheaper.
   `sync attr_reader :size`. Declaring a method *publishes* it on the proxy,
   regardless of its visibility in the class.
 * **`Foo.new` returns a proxy (an instance of `Foo::Proxy`), not a `Foo`.**
-  The proxy has exactly the published methods plus `sync_send` / `async_send`
+  The proxy has exactly the published methods plus `inspect` and `sync_send` / `async_send`
   / `future_send`, `owner`, `owner?`, `active_object_class`. Undeclared methods
   raise `NoMethodError` on the proxy; `*_send` can still reach them, like
   `__send__`.

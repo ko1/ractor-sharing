@@ -297,8 +297,8 @@ static const rb_data_type_t txlogs_type = {
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
-static struct tx_logs *
-tx_logs(void)
+static VALUE
+tx_logs_obj(void)
 {
     VALUE cth = rb_thread_current();
     VALUE txobj = rb_thread_local_aref(cth, id_tx_logs);
@@ -309,15 +309,23 @@ tx_logs(void)
         tx->logs_capa = 0x10; // default
         tx->logs = ALLOC_N(struct tx_log, tx->logs_capa);
         rb_thread_local_aset(cth, id_tx_logs, txobj);
-        return tx;
     }
     else {
         struct tx_logs *tx;
         /* Thread.current[:...] is writable from Ruby, so this has to be checked;
          * DATA_PTR would take an Object.new and dereference it. */
         TypedData_Get_Struct(txobj, struct tx_logs, &txlogs_type, tx);
-        return tx;
+        (void)tx;
     }
+    return txobj;
+}
+
+static struct tx_logs *
+tx_logs(void)
+{
+    struct tx_logs *tx;
+    TypedData_Get_Struct(tx_logs_obj(), struct tx_logs, &txlogs_type, tx);
+    return tx;
 }
 
 static struct tx_log *
@@ -684,7 +692,10 @@ tvar_value_increment_(VALUE self, VALUE inc)
             if (RB_LIKELY(ret != Qundef)) {
                 slot->value = ret;
                 slot->version = new_version;
-                txg->version = new_version;
+                /* No store to txg->version here: txg_next_version already
+                 * published it under version_lock.  Re-storing without the lock
+                 * could roll the clock back over a commit that advanced it, and
+                 * a reused version number lets a stale read pass validation. */
             }
         }
         tx_slot_unlock(slot);
@@ -784,14 +795,22 @@ tx_atomically_ensure(VALUE txptr)
 static VALUE
 tx_atomically(VALUE self)
 {
+    /* Pin the TxLogs for the whole transaction.  Its only other reference is
+     * the thread local, which Ruby code can overwrite mid-transaction; without
+     * this pin that made the raw pointer below dangle once the GC ran. */
+    VALUE txobj = tx_logs_obj();
     struct tx_logs *tx = tx_begin();
+    VALUE ret;
+
     if (tx != NULL) {
-        return rb_ensure(tx_atomically_body, (VALUE)tx,
-                         tx_atomically_ensure, (VALUE)tx);
+        ret = rb_ensure(tx_atomically_body, (VALUE)tx,
+                        tx_atomically_ensure, (VALUE)tx);
     }
     else {
-        return rb_yield(Qnil);
+        ret = rb_yield(Qnil);
     }
+    RB_GC_GUARD(txobj);
+    return ret;
 }
 
 void

@@ -82,6 +82,7 @@ static VALUE
 lockvar_initialize(int argc, VALUE *argv, VALUE self)
 {
     VALUE init = Qnil;
+    rb_check_frozen(self);   /* send(:initialize) again would write past the lock */
     rb_scan_args(argc, argv, "01", &init);
     lockvar_check_shareable(init);
     lockvar_ptr(self)->value = init;

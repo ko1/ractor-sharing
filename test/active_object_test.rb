@@ -3,6 +3,16 @@
 require_relative "test_helper"
 
 class TestActiveObject < Test::Unit::TestCase
+  test "a frozen shareable exception from the servant arrives unmasked" do
+    k = Class.new(Ractor::ActiveObject) do
+      sync def boom = raise(Ractor.make_shareable(RuntimeError.new("frozen boom")))
+    end
+    obj = k.new
+    e = Ractor.new(obj) { |o| begin; o.boom; :no_raise; rescue => x; [x.class.to_s, x.message]; end }.value
+    assert_equal ["RuntimeError", "frozen boom"], e,
+                 "set_backtrace on the frozen exception used to mask it with FrozenError"
+  end
+
   include RactorHelper
 
   class Cache < Ractor::ActiveObject

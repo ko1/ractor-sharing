@@ -173,6 +173,12 @@ class LockVarTest < Test::Unit::TestCase
     assert_acquirable lv
   end
 
+  def test_initialize_cannot_be_rerun
+    lv = Ractor::LockVar.new(1)
+    assert_raise(FrozenError) { lv.send(:initialize, 2) }
+    assert_equal 1, lv.value
+  end
+
   def test_the_lock_is_released_even_if_restoring_the_marker_raises
     # The held marker is an ivar on the Thread, so putting it back runs Ruby and
     # can raise. It used to raise before the release and strand the lock.

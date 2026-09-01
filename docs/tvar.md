@@ -76,8 +76,9 @@ tv.increment                                    # right, and shorter
 ```
 
 A read outside a transaction is allowed, and returns the value as it stands.
-`increment` is allowed too: outside a transaction it takes the variable's own
-lock and does the whole add in one step.
+`increment` is allowed too: outside a transaction it does the whole add in one
+step, under the variable's own lock when both sides are Fixnums, and as a one-off
+transaction otherwise.
 
 `Ractor::TransactionError` is raised for a transaction that cannot proceed;
 `Ractor::RetryTransaction` is what a rollback is made of.
@@ -105,8 +106,9 @@ several: two TVars that have to agree must be read inside one
 process wide lock to allocate its version number, whichever variables it touched.
 Sixteen Ractors updating sixteen *unrelated* TVars get about 3.2× the throughput of
 one, where sixteen LockVars get 7.4×. On an update as small as `increment` there
-is no gain left at all: sixteen Ractors on sixteen TVars get slightly *less*
-throughput than one does, because the commit is then all of the work. Transaction
+is no gain left at all: sixteen Ractors on sixteen TVars get no more throughput
+than one does (79 ns against 77, inside the noise), because the commit is then
+all of the work. Transaction
 bodies do run in parallel; it is the commit that does not.
 
 **Fought over, retrying beats waiting.** Sixteen Ractors updating the *same*

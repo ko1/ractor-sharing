@@ -141,6 +141,7 @@ lockhash_copy_pair(VALUE key, VALUE value, VALUE dest)
 static VALUE
 lockhash_initialize(int argc, VALUE *argv, VALUE self)
 {
+    rb_check_frozen(self);   /* send(:initialize) again would write past the lock */
     VALUE init = Qnil;
 
     rb_scan_args(argc, argv, "01", &init);

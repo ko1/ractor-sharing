@@ -114,8 +114,8 @@ ordinary mutable Ruby object.
 Know what that costs. Each instance **starts a Ractor**, which lives until the
 process ends, since there is no way to stop one, so this is for a handful of
 long-lived objects, not for many small ones. And every call from another Ractor
-is a message round trip: a `sync` call is about **2.5 µs** from a worker Ractor,
-against **0.37 µs** for an uncontended `LockVar#update` on the same machine. An
+is a message round trip: a `sync` call is about **2.6 µs** from a worker Ractor,
+against **0.35 µs** for an uncontended `LockVar#update` on the same machine. An
 `async` call does not wait for the reply and costs about **1.5 µs**. Calls
 to one object are also serialized through its owner, so the object is a
 throughput limit as well as a home for the state. If your state does fit in a
@@ -189,12 +189,14 @@ running a short block again is cheaper than parking a thread and waking it.
 **Spread out, the locks scale as far as the machine does and `TVar` does not**:
 7.4× for `LockVar` against 3.2×, because every committing transaction takes one
 process wide lock to allocate its version number. **Not waiting for the reply is
-worth 3× to 4×** on the two classes that keep a Ractor, and that is the whole
-difference between their sync and async rows.
+worth 3× to 4× when the objects are spread out** on the two classes that keep a
+Ractor (16 on their own, sync against async above); on one shared object the
+serialisation at the owner leaves it under 2×, and from a single caller it is
+about 1.7×.
 
 The `no sharing at all` row is the machine's own ceiling: about 8× is as far as
 anything here scales. Called from the main Ractor rather than a worker, the two
-Ractor backed classes cost about 8.9 µs instead of 2.4, because that thread has a
+Ractor backed classes cost about 8.9 µs instead of 2.6, because that thread has a
 native thread to itself and waking it is a syscall.
 
 ### Not increment

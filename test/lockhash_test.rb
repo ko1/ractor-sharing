@@ -83,6 +83,11 @@ class LockHashTest < Test::Unit::TestCase
     assert_equal 1, t.value if assert_not_nil t.join(3), "fetch deadlocked on a read"
   end
 
+  def test_initialize_cannot_be_rerun
+    assert_raise(FrozenError) { @h.send(:initialize, b: 2) }
+    assert_equal({ a: 1 }, @h.to_h)
+  end
+
   def test_fetch_prefers_the_block_over_the_default
     assert_equal :from_block, @h.fetch(:z, :from_default) { :from_block }
   end

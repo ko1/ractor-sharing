@@ -101,6 +101,49 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_equal 2, tv.value
   end
 
+  test "replacing the transaction thread-local mid-transaction does not crash" do
+    # The transaction log lives in a Ruby-writable thread local, and the C side
+    # threads a raw pointer to it through the transaction. Overwriting the local
+    # used to leave that pointer as the only reference, so a GC freed the log
+    # out from under the commit. The object is pinned for the transaction now;
+    # sabotage gets an exception at worst, never freed memory.
+    t = Thread.new do
+      tv = Ractor::TVar.new(0)
+      10.times do
+        begin
+          Ractor.atomically do
+            tv.value = tv.value + 1
+            Thread.current[:__ractor_tvar_tls__] = nil
+            GC.start(full_mark: true, immediate_sweep: true)
+            tv.value = tv.value + 1
+          end
+        rescue Ractor::TransactionError
+          # the fresh, disabled log refuses the write: acceptable
+        end
+      end
+      :ok
+    end
+    assert_equal :ok, t.value
+  end
+
+  test "direct increments and transactions on the same TVar do not lose updates" do
+    # increment outside a transaction takes the slot lock and a version; the
+    # unlocked version-clock re-store it used to do could roll the clock back
+    # over a concurrent commit and let a stale read pass validation.
+    tv = Ractor::TVar.new(0)
+    other = Ractor::TVar.new(0)
+    rs = 2.times.map { Ractor.new(tv) { |t| 5_000.times { t.increment }; :ok } }
+    rs += 2.times.map do
+      Ractor.new(tv, other) do |t, o|
+        5_000.times { Ractor.atomically { o.value += 1; t.value += 1 } }
+        :ok
+      end
+    end
+    rs.each(&:join)
+    assert_equal 20_000, tv.value
+    assert_equal 10_000, other.value
+  end
+
   test "a TVar is frozen, so shareable means what it says" do
     # The shareable flag used to be set by hand, which left the TVar shareable
     # but not frozen: the main Ractor could go on attaching ivars to an object

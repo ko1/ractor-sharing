@@ -23,7 +23,7 @@ h.async_call {|h| (h[:log] ||= []) << "a line" }   # a value it goes on appendin
 ```
 
 The price is the owner: one Ractor per ActorHash, running until the process
-ends, and about **2.2 µs** for a round trip, where a LockHash operation is a few
+ends, and about **2.3 µs** for a round trip, where a LockHash operation is a few
 hundred **ns**. Reach for this one when the state genuinely will not be frozen;
 otherwise LockHash is far cheaper.
 
