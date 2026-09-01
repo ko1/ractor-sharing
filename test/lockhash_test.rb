@@ -39,6 +39,38 @@ class LockHashTest < Test::Unit::TestCase
     assert_raise(KeyError) { @h.fetch(:z) }
   end
 
+  # A key's #hash runs while the lock is held, and it is ordinary Ruby that can
+  # reach back into the hash. Without the held marker that inner read waited for
+  # a lock its own frame held, and never returned.
+  class ReentrantKey
+    def initialize(hash) = @hash = hash
+    def hash = (@hash[:probe]; 1)
+    def eql?(other) = other.is_a?(ReentrantKey)
+  end
+
+  def test_a_key_callback_may_read_the_same_hash
+    h = Ractor::LockHash.new
+    key = Ractor.make_shareable(ReentrantKey.new(h))
+    t = Thread.new { h[key] }
+    assert_not_nil t.join(3), "a key callback reading the same hash deadlocked"
+    assert_nil t.value
+  end
+
+  def test_a_key_callback_reaching_for_another_lock_is_refused
+    other = Ractor::LockHash.new
+    key = Ractor.make_shareable(ReentrantKey.new(other))
+    h = Ractor::LockHash.new
+    t = Thread.new do
+      h[key]
+    rescue Ractor::NestedLockError
+      :refused
+    end
+    assert_not_nil t.join(3), "a key callback taking a second lock deadlocked"
+    assert_equal :refused, t.value
+    assert_acquirable h
+    assert_acquirable other
+  end
+
   def test_fetch_default_runs_outside_the_lock
     # Held, a block that touched this hash again would wait on a lock its own
     # frame holds. It used to; the block now runs after the lookup releases it.

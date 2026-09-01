@@ -53,6 +53,8 @@ class DocsTest < Test::Unit::TestCase
       indent, expr, want = $1, $2, $3
       next $& if expr.start_with?("#")
 
+      want = want.sub(/\s+#\s.*\z/, "")   # a trailing comment is not part of the value
+
       "#{indent}__doc_check__((#{expr}), #{want.inspect})"
     end
   end

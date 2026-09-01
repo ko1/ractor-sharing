@@ -219,18 +219,24 @@ class Ractor
             begin
               result = servant.__send__(name, *rargs, **rkwargs)
             rescue Exception => e
-              pending = nil
               if kind == :async
+                pending = nil
                 __ao_async_exception__(servant, e, name)
               else
+                # Cleared only once the reply is out: killed in between, the
+                # ensure below would find nothing pending and answer nobody.
                 __ao_reply__(reply, :raise, e)
+                pending = nil
               end
               next
             end
-            pending = nil
-            next if kind == :async
+            if kind == :async
+              pending = nil
+              next
+            end
             result = proxy if result.equal?(servant) # returning self yields the proxy, not a copy
             __ao_reply__(reply, :ok, result)
+            pending = nil
           end
         ensure
           # Going down (e.g. the method killed this thread) with a request in

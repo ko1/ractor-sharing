@@ -101,6 +101,19 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_equal 2, tv.value
   end
 
+  test "a TVar with no slot yet, and a forged transaction log, raise instead of crashing" do
+    # Both took a raw DATA_PTR of whatever they were handed. Ractor::TVar.allocate
+    # gave a TVar with a NULL slot, and the thread local holding the transaction
+    # log is writable from Ruby, so either one segfaulted.
+    assert_raise(TypeError) { Ractor::TVar.allocate }
+
+    t = Thread.new do
+      Thread.current[:__ractor_tvar_tls__] = Object.new
+      assert_raise(TypeError) { Ractor::TVar.new(1).value }
+    end
+    t.join
+  end
+
   test "a TVar reachable only from a transaction in flight survives a GC" do
     # The transaction log holds a raw pointer to the TVar's slot and the TVar
     # itself to keep it alive. The TVar went unmarked, so a GC here freed the
@@ -176,17 +189,26 @@ class Ractor::TVarTest < Test::Unit::TestCase
   # documented hazard itself -- a side effect in the block happens again on
   # every retry.
   test "a block may run more than once, so keep it free of side effects" do
-    runs = Ractor::LockVar.new(0)
-    tv = Ractor::TVar.new(0)
-    rs = 4.times.map do
-      Ractor.new(tv, runs) do |t, r|
-        200.times { Ractor.atomically { r.increment; t.value += 1 } }
-        :ok
+    # Contention makes a retry very likely but never certain: a schedule where
+    # every transaction commits unopposed is legal, and it does turn up. Try
+    # again rather than assert a coin flip.
+    total = 4 * 200
+    extra = 0
+    5.times do
+      runs = Ractor::LockVar.new(0)
+      tv = Ractor::TVar.new(0)
+      rs = 4.times.map do
+        Ractor.new(tv, runs) do |t, r|
+          200.times { Ractor.atomically { r.increment; t.value += 1 } }
+          :ok
+        end
       end
+      rs.each(&:join)
+      assert_equal total, tv.value, "every increment landed exactly once"
+      extra = runs.value - total
+      break if extra > 0
     end
-    rs.each(&:join)
-    assert_equal 800, tv.value, "every increment landed exactly once"
-    assert_operator runs.value, :>, 800, "and the block ran more often than that"
+    assert_operator extra, :>, 0, "in five tries no transaction ever ran its block twice"
   end
 
   test "the transaction errors exist" do

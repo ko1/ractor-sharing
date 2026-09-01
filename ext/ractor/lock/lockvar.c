@@ -107,10 +107,8 @@ lockvar_update_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockvar *lv = lockvar_ptr(arg->self);
-    VALUE next;
+    VALUE next = rb_yield(lv->value);   /* rs_guarded has marked the lock held */
 
-    rs_held_set(arg->thread, arg->self);
-    next = rb_yield(lv->value);
     lockvar_check_shareable(next);
     lv->value = next;
     return next;
@@ -122,10 +120,8 @@ lockvar_increment_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockvar *lv = lockvar_ptr(arg->self);
-    VALUE next;
+    VALUE next = rb_funcall(lv->value, id_plus, 1, (VALUE)arg->data);
 
-    rs_held_set(arg->thread, arg->self);
-    next = rb_funcall(lv->value, id_plus, 1, (VALUE)arg->data);
     lockvar_check_shareable(next);
     lv->value = next;
     return next;
@@ -183,8 +179,10 @@ lockvar_increment(int argc, VALUE *argv, VALUE self)
     struct lockvar *lv = lockvar_ptr(self);
     VALUE amount;
 
-    rb_scan_args(argc, argv, "01", &amount);
-    if (NIL_P(amount)) amount = INT2FIX(1);
+    /* Not rb_scan_args: an explicit nil is an argument, and value + nil raises,
+     * where an omitted one means 1. */
+    rb_check_arity(argc, 0, 1);
+    amount = argc == 0 ? INT2FIX(1) : argv[0];
 
     if (FIXNUM_P(amount) && NIL_P(rs_held(rb_thread_current()))) {
         VALUE next;
@@ -214,8 +212,22 @@ lockvar_increment(int argc, VALUE *argv, VALUE self)
 static VALUE
 lockvar_value(VALUE self)
 {
-    return rs_guarded(self, &lockvar_ptr(self)->lock, lockvar_value_body, NULL, false,
-                      "the block was given that value already");
+    struct lockvar *lv = lockvar_ptr(self);
+    VALUE v;
+
+    /* Inside any update, this is the nesting error, and rs_guarded raises it. */
+    if (RB_UNLIKELY(!NIL_P(rs_held(rb_thread_current())))) {
+        return rs_guarded(self, &lv->lock, lockvar_value_body, NULL, false,
+                          "the block was given that value already");
+    }
+
+    /* Otherwise: take the lock, read one word, put it back.  No Ruby runs in
+     * between, so there is no interrupt to guard against and no reason to mark
+     * the lock held -- which is what the ensure and the marker are for. */
+    rs_lock_acquire(&lv->lock);
+    v = lv->value;
+    rs_lock_release(&lv->lock);
+    return v;
 }
 
 static VALUE

@@ -195,12 +195,40 @@ rs_held_set(VALUE thread, VALUE obj)
 }
 
 static VALUE
-rs_guard_ensure(VALUE ptr)
+rs_restore_held(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     rs_held_set(arg->thread, arg->prev_held);
-    rs_lock_release(arg->lock);
     return Qnil;
+}
+
+/* The marker lives in an ivar on the Thread, so restoring it runs Ruby-visible
+ * code and can raise -- a frozen Thread does.  Raising here used to skip the
+ * release below and strand the lock for the life of the process. */
+static VALUE
+rs_guard_ensure(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+    int state = 0;
+
+    rb_protect(rs_restore_held, (VALUE)arg, &state);
+    rs_lock_release(arg->lock);
+    if (state) rb_jump_tag(state);
+    return Qnil;
+}
+
+/* Marks the lock held for the whole body, reads included.  A read runs Ruby it
+ * does not control -- a key's #hash, a value's #inspect -- and that code reaching
+ * back into this object used to wait for a lock its own frame was holding.  With
+ * the marker set it is reentrant instead, and reaching for a different lock
+ * raises rather than inverting the order. */
+static VALUE
+rs_guard_body(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+
+    rs_held_set(arg->thread, arg->self);
+    return arg->body(ptr);
 }
 
 VALUE
@@ -216,7 +244,7 @@ rs_guarded(VALUE self, struct rs_lock *lk, VALUE (*body)(VALUE), void *data,
     arg.data = data;
 
     if (arg.prev_held == self) {
-        if (reentrant) return body((VALUE)&arg);
+        if (reentrant) return body((VALUE)&arg);   /* already marked, already held */
         rb_raise(rb_eRactorNestedLock, "already inside this %"PRIsVALUE"; %s",
                  rb_obj_class(self), self_hint);
     }
@@ -227,9 +255,12 @@ rs_guarded(VALUE self, struct rs_lock *lk, VALUE (*body)(VALUE), void *data,
                  rb_obj_class(arg.prev_held));
     }
 
+    arg.body = body;
     rs_lock_acquire(lk);
-    /* No interrupt can land between the line above and the ensure below. */
-    return rb_ensure(body, (VALUE)&arg, rs_guard_ensure, (VALUE)&arg);
+    /* No interrupt can land between the line above and the ensure below, so
+     * nothing here may run Ruby: marking the lock held is the body's first act,
+     * inside the ensure, not a step before it. */
+    return rb_ensure(rs_guard_body, (VALUE)&arg, rs_guard_ensure, (VALUE)&arg);
 }
 
 void

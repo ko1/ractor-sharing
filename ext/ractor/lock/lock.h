@@ -47,6 +47,7 @@ struct rs_guard_arg {
     VALUE prev_held;
     struct rs_lock *lock;
     void *data;
+    VALUE (*body)(VALUE);
 };
 
 extern VALUE rb_eRactorNestedLock;

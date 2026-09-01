@@ -284,9 +284,16 @@ tx_free(void *ptr)
     ruby_xfree(tx);
 }
 
+static size_t
+tx_memsize(const void *ptr)
+{
+    const struct tx_logs *tx = (const struct tx_logs *)ptr;
+    return sizeof(struct tx_logs) + (size_t)tx->logs_capa * sizeof(struct tx_log);
+}
+
 static const rb_data_type_t txlogs_type = {
     "txlogs",
-    {tx_mark, tx_free, NULL,},
+    {tx_mark, tx_free, tx_memsize, NULL},
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
@@ -305,8 +312,11 @@ tx_logs(void)
         return tx;
     }
     else {
-        // TODO: check
-        return DATA_PTR(txobj);
+        struct tx_logs *tx;
+        /* Thread.current[:...] is writable from Ruby, so this has to be checked;
+         * DATA_PTR would take an Object.new and dereference it. */
+        TypedData_Get_Struct(txobj, struct tx_logs, &txlogs_type, tx);
+        return tx;
     }
 }
 
@@ -554,11 +564,28 @@ tvar_free(void *ptr)
     ruby_xfree(slot);
 }
 
+static size_t
+tvar_memsize(const void *ptr)
+{
+    return sizeof(struct tvar_slot);
+}
+
 static const rb_data_type_t tvar_data_type = {
     "Thread::TVar",
-    {tvar_mark, tvar_free, NULL,},
+    {tvar_mark, tvar_free, tvar_memsize, NULL},
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
+
+static struct tvar_slot *
+tvar_ptr(VALUE self)
+{
+    struct tvar_slot *slot;
+    TypedData_Get_Struct(self, struct tvar_slot, &tvar_data_type, slot);
+    if (RB_UNLIKELY(slot == NULL)) {
+        rb_raise(rb_eTypeError, "uninitialized %"PRIsVALUE, rb_obj_class(self));
+    }
+    return slot;
+}
 
 static VALUE
 tvar_new_(VALUE self, VALUE init)
@@ -593,7 +620,7 @@ static VALUE
 tvar_value(VALUE self)
 {
     struct tx_logs *tx = tx_logs();
-    struct tvar_slot *slot = DATA_PTR(self);
+    struct tvar_slot *slot = tvar_ptr(self);
 
     if (tx->enabled) {
         return tx_get(tx, slot, self);
@@ -613,16 +640,21 @@ tvar_value_set(VALUE self, VALUE val)
 
     struct tx_logs *tx = tx_logs();
     tx_check(tx);
-    struct tvar_slot *slot = DATA_PTR(self);
+    struct tvar_slot *slot = tvar_ptr(self);
     tx_set(tx, val, slot, self);
     return val;
 }
 
+/* The sum only when it is still a Fixnum: rb_fix_plus_fix allocates a Bignum
+ * when it is not, and this runs with the slot's native mutex held. */
 static VALUE
 tvar_calc_inc(VALUE v, VALUE inc)
 {
     if (RB_LIKELY(FIXNUM_P(v) && FIXNUM_P(inc))) {
-        return rb_fix_plus_fix(v, inc);
+        long x = FIX2LONG(v), y = FIX2LONG(inc);
+
+        if (y > 0 ? x > FIXNUM_MAX - y : x < FIXNUM_MIN - y) return Qundef;
+        return LONG2FIX(x + y);
     }
     else {
         return Qundef;
@@ -635,7 +667,7 @@ tvar_value_increment_(VALUE self, VALUE inc)
     struct tx_global *txg = tx_global_ptr();
     struct tx_logs *tx = tx_logs();
     VALUE recv, ret;
-    struct tvar_slot *slot = DATA_PTR(self);
+    struct tvar_slot *slot = tvar_ptr(self);
 
     if (!tx->enabled) {
         tx_slot_lock(slot);
@@ -785,6 +817,8 @@ Init_tvar(void)
     rb_define_singleton_method(rb_cRactor, "atomically", tx_atomically, 0);
 
     rb_cRactorTVar = rb_define_class_under(rb_cRactor, "TVar", rb_cObject);
+    /* .new makes the slot; an allocated-but-uninitialized TVar has none. */
+    rb_undef_alloc_func(rb_cRactorTVar);
     rb_define_singleton_method(rb_cRactorTVar, "new", tvar_new, -1);
     rb_define_method(rb_cRactorTVar, "value", tvar_value, 0);
     rb_define_method(rb_cRactorTVar, "value=", tvar_value_set, 1);

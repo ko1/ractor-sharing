@@ -164,6 +164,28 @@ class LockVarTest < Test::Unit::TestCase
     assert_equal 1200, lv.value
   end
 
+  def test_increment_with_an_explicit_nil_is_not_an_omitted_argument
+    # increment(nil) used to add 1, because rb_scan_args cannot tell the two
+    # apart. value + nil is what was asked for, and that raises.
+    lv = Ractor::LockVar.new(0)
+    assert_raise(TypeError) { lv.increment(nil) }
+    assert_equal 0, lv.value
+    assert_acquirable lv
+  end
+
+  def test_the_lock_is_released_even_if_restoring_the_marker_raises
+    # The held marker is an ivar on the Thread, so putting it back runs Ruby and
+    # can raise. It used to raise before the release and strand the lock.
+    lv = Ractor::LockVar.new(0)
+    t = Thread.new do
+      lv.update { Thread.current.freeze; 1 }
+    rescue FrozenError
+      :raised
+    end
+    assert_equal :raised, t.value
+    assert_acquirable lv
+  end
+
   def test_increment_crosses_the_fixnum_boundary
     # The fast path only adds two Fixnums whose sum is still a Fixnum; either end
     # of that range has to fall through to +, and the lock has to survive it.

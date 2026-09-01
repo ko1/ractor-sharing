@@ -15,7 +15,7 @@ board = Ractor::LockHash.new
   end
 end.each(&:join)
 
-board.to_h #=> {0 => 99, 1 => 99, 2 => 99, 3 => 99}
+board.to_h.sort.to_h #=> {0 => 99, 1 => 99, 2 => 99, 3 => 99}   # whoever wrote first is first
 ```
 
 ## Why not a LockVar holding a Hash
