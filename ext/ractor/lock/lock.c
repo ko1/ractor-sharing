@@ -163,9 +163,17 @@ rs_lock_acquire(struct rs_lock *lk)
 void
 rs_lock_release(struct rs_lock *lk)
 {
+    bool waiting;
+
     rb_native_mutex_lock(&lk->mutex);
     lk->locked = false;
+    waiting = lk->head != NULL;
     rb_native_mutex_unlock(&lk->mutex);
+
+    /* Nobody queued is the common case, and it is already answered above: taking
+     * the mutex a second time to find that out would double the cost of an
+     * uncontended release. */
+    if (!waiting) return;
 
     /* Waiters stay queued until they wake by themselves, so a wakeup lost to an
      * interrupt here is retried by the next release. */

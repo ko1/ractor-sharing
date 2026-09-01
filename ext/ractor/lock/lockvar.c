@@ -161,13 +161,42 @@ lockvar_update(VALUE self)
  *  Adds +amount+ to the value under the lock and returns the result; the same as
  *  <code>update {|v| v + amount }</code>.
  */
+/* Fixnum + Fixnum, when the sum is still a Fixnum: no Ruby runs, so nothing can
+ * be interrupted and nothing can re-enter. That lets the whole ceremony go --
+ * the held marker, the ensure, the shareable check, the method dispatch -- and
+ * leaves the lock and one add. Returns Qundef when it does not apply. */
+static VALUE
+lockvar_fixnum_add(VALUE a, VALUE b)
+{
+    long x, y;
+
+    if (!FIXNUM_P(a) || !FIXNUM_P(b)) return Qundef;
+    x = FIX2LONG(a);
+    y = FIX2LONG(b);
+    if (y > 0 ? x > FIXNUM_MAX - y : x < FIXNUM_MIN - y) return Qundef;
+    return LONG2FIX(x + y);
+}
+
 static VALUE
 lockvar_increment(int argc, VALUE *argv, VALUE self)
 {
+    struct lockvar *lv = lockvar_ptr(self);
     VALUE amount;
+
     rb_scan_args(argc, argv, "01", &amount);
     if (NIL_P(amount)) amount = INT2FIX(1);
-    return rs_guarded(self, &lockvar_ptr(self)->lock, lockvar_increment_body,
+
+    if (FIXNUM_P(amount) && NIL_P(rs_held(rb_thread_current()))) {
+        VALUE next;
+
+        rs_lock_acquire(&lv->lock);
+        next = lockvar_fixnum_add(lv->value, amount);
+        if (!RB_UNDEF_P(next)) lv->value = next;
+        rs_lock_release(&lv->lock);
+
+        if (!RB_UNDEF_P(next)) return next;
+    }
+    return rs_guarded(self, &lv->lock, lockvar_increment_body,
                       (void *)amount, false, "the block was given that value already");
 }
 
