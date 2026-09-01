@@ -55,7 +55,7 @@ other. Use a transaction whenever two operations have to belong together.
 
 * One variable, or a block that must not run twice —
   [`Ractor::LockVar`](lockvar.md), which waits its turn instead of retrying.
-* State that is a collection with methods over it —
+* State you do not want to freeze — a mutable object, updated in place —
   [`Ractor::ActiveObject`](active_object.md).
 
 ## Scaling

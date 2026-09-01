@@ -4,16 +4,22 @@ Ways for Ractors to share mutable state.
 
 Ractors keep their objects to themselves. What crosses between them is either
 frozen or copied, so there is nowhere to put a counter, a registry or a cache
-that several Ractors both read and change. Each class here is such a place: a
-shareable object holding state that any Ractor may read and change, safely.
+that several Ractors both read and change. Each class here is such a place.
 
-They differ in how much state changes at a time. That is what picks one:
+What picks one is the state you have:
 
-| | changes at a time | you write |
+| | holds | you write |
 |---|---|---|
-| [`Ractor::LockVar`](docs/lockvar.md) | one variable | `lv.update {\|v\| v + 1 }` |
-| [`Ractor::TVar`](docs/tvar.md) | several variables, together | `Ractor.atomically { a.value += 1; b.value -= 1 }` |
-| [`Ractor::ActiveObject`](docs/active_object.md) | a whole object graph | `sync def add(k, v) = @db[k] = v` |
+| [`Ractor::LockVar`](docs/lockvar.md) | one shareable value | `lv.update {\|v\| v + 1 }` |
+| [`Ractor::TVar`](docs/tvar.md) | several shareable values, changed together | `Ractor.atomically { a.value += 1; b.value -= 1 }` |
+| [`Ractor::ActiveObject`](docs/active_object.md) | a mutable object, kept unshareable | `sync def add(k, v) = @db[k] = v` |
+
+The first two hold **shareable** values, so an update replaces the value rather
+than modifying it: `lv.update { it.merge(k => v).freeze }`. When your state is a
+mutable object you have no intention of freezing — a Hash you keep writing into,
+an object graph with methods over it — it cannot go in either of them.
+`ActiveObject` is for exactly that: the object stays mutable and unshareable, in
+a Ractor of its own, and you send it the calls instead of the data.
 
 ```ruby
 require "ractor/sharing"   # or one at a time: "ractor/lockvar", "ractor/tvar", "ractor/active_object"
@@ -41,9 +47,10 @@ from, to = Ractor::TVar.new(100), Ractor::TVar.new(0)
 Ractor.atomically { from.value -= 10; to.value += 10 }
 ```
 
-**A whole object graph — `ActiveObject`.** When the state is not one value but a
-collection with methods over it, give it to a Ractor of its own and send it the
-work instead of the data.
+**A mutable object — `ActiveObject`.** When freezing the state is not on the
+table, give the object a Ractor of its own. It never leaves; callers send method
+calls in, the owner runs them one at a time, and the object goes on being an
+ordinary mutable Ruby object.
 
 ```ruby
 class People < Ractor::ActiveObject
@@ -54,8 +61,8 @@ end
 ```
 
 Reaching for two `LockVar`s at once is refused, with a message pointing here:
-that is the sign you wanted a `TVar`. Reaching for a variable that has methods
-of its own is the sign you wanted an `ActiveObject`.
+that is the sign you wanted a `TVar`. Finding yourself freezing a copy of a
+collection on every update is the sign you wanted an `ActiveObject`.
 
 ## Requirements
 
