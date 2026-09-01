@@ -10,16 +10,19 @@ that several Ractors both read and change. Each class here is such a place.
 it cannot deadlock, and it is the quickest of these when a variable is fought
 over. Move off it only for a reason the others below name.
 
-| | reach for it when | cost |
-|---|---|---|
-| [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 71 ns |
-| [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 118 ns |
-| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | the same, but the keys are not known in advance | 195 ns |
-| [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.2 µs + a Ractor |
-| [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.async_call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.0 µs + a Ractor |
+| | reach for it when | read | write |
+|---|---|---:|---:|
+| [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 64 ns | 333 ns |
+| [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 103 ns | 352 ns |
+| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | the same, but the keys are not known in advance | 113 ns | 447 ns |
+| [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.5 µs | 2.7 µs |
+| [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.async_call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.3 µs | 3.1 µs |
 
-Cost is one uncontended operation from a single Ractor on 16 cores; the two at the
-bottom also start a Ractor apiece, which runs until the process ends.
+One uncontended operation from a single Ractor on 16 cores, replacing a frozen
+record. The two at the bottom also start a Ractor apiece, which runs until the
+process ends, and their write drops to 1.5 µs and 2.1 µs when it is sent without
+waiting for the reply. Contended, the order changes: see
+[Performance](#performance).
 
 The first three hold **shareable** values, so a change replaces a value rather
 than modifying it: `lv.update { it.merge(k => v).freeze }`. When your state is a
@@ -95,8 +98,8 @@ ordinary mutable Ruby object.
 Know what that costs. Each instance **starts a Ractor**, which lives until the
 process ends, since there is no way to stop one, so this is for a handful of
 long-lived objects, not for many small ones. And every call from another Ractor
-is a message round trip: about **2.0 µs** from a worker Ractor, against
-**0.12 µs** for an uncontended `LockVar#update` on the same machine. Calls
+is a message round trip: about **2.5 µs** from a worker Ractor, against
+**0.35 µs** for an uncontended `LockVar#update` on the same machine. Calls
 to one object are also serialized through its owner, so the object is a
 throughput limit as well as a home for the state. If your state does fit in a
 shareable value, one of the first three will cost you far less.
@@ -109,9 +112,6 @@ class People < Ractor::ActiveObject
 end
 ```
 
-Reaching for two `LockVar`s at once is refused, with a message pointing here:
-that is the sign you wanted a `TVar`. Finding yourself freezing a copy of a
-collection on every update is the sign you wanted an `ActiveObject`.
 **A hash whose values will not be frozen: `ActorHash`.** Same shape as
 `LockHash`, but the entries live in a Ractor of its own, so they can be anything
 and a block changes them in place over there. Reads are questions you ask;
@@ -123,6 +123,11 @@ h.increment(:hits)
 h.async_call {|h| (h[:log] ||= []) << line }
 h[:log]
 ```
+
+Two signs you picked the wrong one. Reaching for two `LockVar`s at once is
+refused, with a message pointing here: that is the sign you wanted a `TVar`.
+Finding yourself freezing a copy of a collection on every update is the sign you
+wanted an `ActiveObject`.
 
 
 ## Performance
