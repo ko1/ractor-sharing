@@ -34,6 +34,7 @@
 #   BENCH_CS=1,16 ruby family.rb       # 指定した並行度だけ
 #   BENCH_SCALE=10 ruby family.rb      # 仕事量を 1/10 に
 #   PART=fastpath ruby family.rb       # increment の近道の表だけ
+#   REPS=3 ruby family.rb              # 各セル 3 回、中央値とばらつき
 require_relative "lib/bench"
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 Warning[:experimental] = false
@@ -45,6 +46,7 @@ FAST = bscale(Integer(ENV["PER"] || 30_000))
 SLOW = bscale(Integer(ENV["PER"] || 2_000))
 CS   = ENV["BENCH_C"] ? [bconc(8)] : (ENV["BENCH_CS"] || "1,2,4,8,16").split(",").map(&:to_i)
 PART = ENV.fetch("PART", "all")   # all | record | fastpath
+REPS = Integer(ENV.fetch("REPS", 1))   # 各セルの反復。中央値を出す
 
 REC = { status: :running, seq: 1 }.freeze   # seq は 1 始まり: read の検算が 0 に化けない
 MIX = 10                                    # mix は MIX 回に 1 回 write
@@ -228,12 +230,18 @@ def make_objs(c, sub, cond)
   end                                     # 所有者 Ractor は止められないので残り続ける
 end
 
+# 1 セルを REPS 回まわして中央値。ばらつきは $spread に貯めて最後に出す。
+$spread = []
+
+def cell(c, sub, mode, cond, per)
+  vals = REPS.times.map { run(make_objs(c, sub, cond), sub, mode, per).per_op_us * 1000 }.sort
+  med = vals[vals.size / 2]
+  $spread << [(vals.last - vals.first) / med, "#{sub[:label]} #{mode}/#{cond} C=#{c}"] if REPS > 1 && med > 0
+  med
+end
+
 def sweep(c, sub, per)
-  MODES.flat_map do |mode|
-    [:conflict, :noconflict].map do |cond|
-      run(make_objs(c, sub, cond), sub, mode, per).per_op_us * 1000
-    end
-  end
+  MODES.flat_map { |mode| [:conflict, :noconflict].map { |cond| cell(c, sub, mode, cond, per) } }
 end
 
 puts RUBY_DESCRIPTION
@@ -263,9 +271,21 @@ CS.each do |c|
   printf("%-32s %12s %12s\n", "C=#{c}", "conflict", "no conflict")
   FAST_PATH.each do |sub|
     row = [:conflict, :noconflict].map do |cond|
-      run_fast_path(make_objs(c, sub, cond), sub, FAST).per_op_us * 1000
+      vals = REPS.times.map { run_fast_path(make_objs(c, sub, cond), sub, FAST).per_op_us * 1000 }.sort
+      med = vals[vals.size / 2]
+      $spread << [(vals.last - vals.first) / med, "#{sub[:label]} #{cond} C=#{c}"] if REPS > 1 && med > 0
+      med
     end
     printf("%-32s %10.0f ns %9.0f ns\n", sub[:label], row[0], row[1])
   end
 end
+end
+
+# 1 回だけ測った数字を並べても、差なのかばらつきなのか読めない。
+unless $spread.empty?
+  worst = $spread.max_by(&:first)
+  median = $spread.map(&:first).sort[$spread.size / 2]
+  puts
+  printf("spread over %d runs per cell: median %.0f%%, worst %.0f%% (%s)\n",
+         REPS, median * 100, worst[0] * 100, worst[1])
 end

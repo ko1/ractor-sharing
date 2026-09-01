@@ -47,16 +47,16 @@ Requires Ruby 4.0 or later (`Ractor::Port`).
 Each instance starts a Ractor of its own, and that Ractor runs until the process
 ends: there is no shutdown. Creating active objects in a loop leaks them.
 
-Every `sync` call from another Ractor is a message round trip, about **2.5 µs**
+Every `sync` call from another Ractor is a message round trip, about **2.6 µs**
 measured on 16 cores, where the same update on an uncontended
-`Ractor::LockVar` is **0.37 µs**. From the main Ractor rather than a worker it is
+`Ractor::LockVar` is **0.35 µs**. From the main Ractor rather than a worker it is
 **8.9 µs**, because that thread has a native thread to itself and waking it is a
 syscall. Calls to one object run one at a time on its owner, so a single hot
 object caps how fast callers get through it.
 
 **An `async` method is the one to reach for when nothing needs the answer**, since
 the round trip is most of the cost: sixteen Ractors with an object each get
-through `async` calls at **0.23 µs**, against 0.75 µs for the same method declared
+through `async` calls at **0.18 µs**, against 0.76 µs for the same method declared
 `sync`. Reads have to be `sync`, because the answer is the point.
 
 None of that applies to calls made *inside* the owner: those are plain Ruby

@@ -28,9 +28,10 @@ hundred **ns**. Reach for this one when the state genuinely will not be frozen;
 otherwise LockHash is far cheaper.
 
 A write that does not need an answer should be `async_call` or `set` rather than
-`call`: not waiting for the reply is worth 3× on sixteen Ractors with a hash each
-(191 ns against 740) and 1.8× on sixteen sharing one (997 ns against 1746). Reads
-pay the full round trip regardless, since a read is the answer.
+`call`: not waiting for the reply is worth about 3× on sixteen Ractors with a
+hash each (216 ns against 754) and under 2× on sixteen sharing one (1028 ns
+against 1744). Reads pay the full round trip regardless, since a read is the
+answer.
 
 ## API
 
