@@ -15,11 +15,16 @@ class Ractor
   #   Ractor::LockVar       one variable
   #   Ractor::LockHash      a hash, atomic across its own keys
   #   Ractor::TVar          several variables, changed together
-  #   Ractor::ActiveObject  an object of your own, owned by one Ractor
   #   Ractor::ActorHash     a hash owned by one Ractor
+  #   Ractor::ActiveObject  an object of your own, owned by one Ractor
   #
-  # Require this file for all of them, or require them one at a time
-  # ("ractor/lockvar", "ractor/tvar", "ractor/active_object").
+  # Require this file for all of them, or one at a time:
+  #
+  #   require "ractor/lockvar"
+  #   require "ractor/lockhash"
+  #   require "ractor/tvar"
+  #   require "ractor/actor_hash"
+  #   require "ractor/active_object"
   module Sharing
   end
 end

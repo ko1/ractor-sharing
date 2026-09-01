@@ -24,7 +24,13 @@ an object graph with methods over it — it cannot go in either of them.
 a Ractor of its own, and you send it the calls instead of the data.
 
 ```ruby
-require "ractor/sharing"   # or one at a time: "ractor/lockvar", "ractor/tvar", "ractor/active_object"
+require "ractor/sharing"        # all of them
+
+require "ractor/lockvar"        # or one at a time
+require "ractor/lockhash"
+require "ractor/tvar"
+require "ractor/actor_hash"
+require "ractor/active_object"
 ```
 
 ## Which one
