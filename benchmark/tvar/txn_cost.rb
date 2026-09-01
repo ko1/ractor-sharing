@@ -11,7 +11,7 @@
 #   tvar write    atomically の中で 1 変数を read-modify-write
 #   increment     ライブラリ側の #increment（同じ更新の専用経路）
 Warning[:experimental] = false
-require_relative "lib/bench"
+require_relative "../lib/bench"
 require "ractor/tvar"
 
 N = bscale(Integer(ENV.fetch("N", 200_000)))

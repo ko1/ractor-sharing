@@ -5,7 +5,7 @@
 #
 #   WORKERS=16 MODE=ractor ruby benchmark/scaling.rb
 Warning[:experimental] = false
-require_relative "lib/bench"
+require_relative "../lib/bench"
 require "ractor/tvar"
 
 WORKERS = bconc(Integer(ENV.fetch("WORKERS", 8)))

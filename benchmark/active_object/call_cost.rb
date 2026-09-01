@@ -14,7 +14,7 @@
 # 「呼び手が払う額」であって処理が終わった時刻ではない。最後に sync を 1 回
 # 入れてキューを空にしてから止める（README の barrier 規約）。
 Warning[:experimental] = false
-require_relative "lib/bench"
+require_relative "../lib/bench"
 require_relative "../../lib/ractor/active_object"
 
 N = bscale(Integer(ENV.fetch("N", 50_000)))

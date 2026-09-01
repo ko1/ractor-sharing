@@ -8,7 +8,7 @@
 #
 # 掃引点は nproc の前後を跨ぐこと（1/2/8/16/32/64）。
 Warning[:experimental] = false
-require_relative "lib/bench"
+require_relative "../lib/bench"
 require_relative "../../lib/ractor/active_object"
 
 CALLERS = bconc(Integer(ENV.fetch("CALLERS", 8)))

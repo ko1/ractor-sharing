@@ -6,7 +6,7 @@
 #
 #   OBJECTS=16 ruby benchmark/objects.rb
 Warning[:experimental] = false
-require_relative "lib/bench"
+require_relative "../lib/bench"
 require_relative "../../lib/ractor/active_object"
 
 OBJECTS = bconc(Integer(ENV.fetch("OBJECTS", 8)))

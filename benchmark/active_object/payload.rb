@@ -6,7 +6,7 @@
 #
 #   BYTES=4096 ruby benchmark/payload.rb
 Warning[:experimental] = false
-require_relative "lib/bench"
+require_relative "../lib/bench"
 require_relative "../../lib/ractor/active_object"
 
 BYTES     = Integer(ENV.fetch("BYTES", 0))

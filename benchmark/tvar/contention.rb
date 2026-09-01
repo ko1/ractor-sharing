@@ -9,7 +9,7 @@
 #
 # 最後に必ず合計値を検算する（WORKERS*PER でなければ STM が壊れている）。
 Warning[:experimental] = false
-require_relative "lib/bench"
+require_relative "../lib/bench"
 require "ractor/tvar"
 
 WORKERS = bconc(Integer(ENV.fetch("WORKERS", 8)))
