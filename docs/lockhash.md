@@ -39,12 +39,20 @@ h[key]                # read
 h.fetch(key, default) # read, with the usual default / block / KeyError
 h.key?(key)
 h.keys / h.to_h       # a frozen, shareable snapshot of the whole hash
+h.inspect
 
-h.synchronize {|h| ... }   # the only place writes are allowed
+h.synchronize {|h| ... }   # the only place writes are allowed; yields the LockHash
 h[key] = value             #   inside synchronize
 h.delete(key)              #   inside synchronize
 h.clear                    #   inside synchronize
 ```
+
+There is no `size` and no `empty?`. A count handed back after the lock is
+released is already stale, and inside a section `keys` says the same thing.
+
+`fetch` prefers its block to an explicit default, as `Hash#fetch` does, and runs
+that block **after** the lookup has released the lock, so a default that reads
+this hash again is fine.
 
 Keys and values must be **shareable**; `ArgumentError` otherwise. The LockHash
 itself is frozen and shareable, so it can be passed to any Ractor.
@@ -52,6 +60,7 @@ itself is frozen and shareable, so it can be passed to any Ractor.
 ### Writes only inside `synchronize`
 
 ```ruby
+h = Ractor::LockHash.new
 h[:a] = 1
 # => NoMethodError: '[]=' is only allowed inside Ractor::LockHash#synchronize
 ```
@@ -105,9 +114,11 @@ board.synchronize {|b| b[:x] = i; b[:y] = i }   # a reader never sees x != y
 ```
 
 That is atomicity **across the keys of this hash**. Across separate objects it is
-not: taking a second LockHash, or a LockVar, from inside a `synchronize` raises
-`Ractor::NestedLockError`, because that is where lock-order deadlocks come from.
-Several objects that must change together are [`Ractor::TVar`](tvar.md)'s job.
+not: taking a *different* LockHash, or a LockVar, from inside a `synchronize`
+raises `Ractor::NestedLockError`, because that is where lock-order deadlocks come
+from. Several objects that must change together are [`Ractor::TVar`](tvar.md)'s
+job. Nesting `synchronize` on the *same* hash is allowed, so a section may call a
+method that takes one again.
 
 There is no rollback either. A block that raises keeps whatever it had already
 written; the lock is released, nothing more.
@@ -120,10 +131,10 @@ as one [`Ractor::LockVar`](lockvar.md) per key, which scales with the cores.
 That is open to you whenever you never need two keys to change together.
 
 **Reads take the lock too, so they do not scale either.** Sixteen Ractors reading
-one shared LockHash cost 438 ns per read, against 18 ns when each has a hash of
-its own; a [`Ractor::TVar`](tvar.md) read costs 10 ns either way, because it takes
-no lock. Entries live in a table that a write rebuilds, so a reader cannot be let
-in beside a writer the way a TVar's single slot can. If your load is read heavy
+one shared LockHash cost 408 ns per read, against 18 ns when each has a hash of
+its own; a [`Ractor::TVar`](tvar.md) read costs 9 ns whether it is shared or not,
+because it takes no lock. One exclusive lock covers the whole hash, so a reader cannot be let in beside a
+writer the way a TVar's single slot can. If your load is read heavy
 and the hash is shared, that is the number that will decide it.
 
 Acquisition is not FIFO: a thread may barge ahead of waiters, so readers hammering

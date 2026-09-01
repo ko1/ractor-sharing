@@ -23,13 +23,13 @@ h.async_call {|h| (h[:log] ||= []) << "a line" }   # a value it goes on appendin
 ```
 
 The price is the owner: one Ractor per ActorHash, running until the process
-ends, and about **2 µs** for a round trip, where a LockHash operation is a few
+ends, and about **2.3 µs** for a round trip, where a LockHash operation is a few
 hundred **ns**. Reach for this one when the state genuinely will not be frozen;
 otherwise LockHash is far cheaper.
 
 A write that does not need an answer should be `async_call` or `set` rather than
 `call`: not waiting for the reply is worth 3× on sixteen Ractors with a hash each
-(244 ns against 750) and 2× on sixteen sharing one (1001 ns against 2006). Reads
+(224 ns against 732) and 2× on sixteen sharing one (912 ns against 1772). Reads
 pay the full round trip regardless, since a read is the answer.
 
 ## API
@@ -37,10 +37,11 @@ pay the full round trip regardless, since a read is the answer.
 ```ruby
 h = Ractor::ActorHash.new(initial = nil)
 
-h[key]                 # read; the value comes back as a copy
+h[key]                 # read; an unshareable value comes back as a copy
 h.fetch(key)           # KeyError when missing; also fetch(key, default) and fetch(key) { }
 h.key?(key)
 h.keys / h.to_h        # a copy of the whole thing
+h.inspect
 
 h.set(key, value)                 # send a write; returns nil
 h.increment(key, by = 1)          # send an add; returns nil
@@ -48,7 +49,21 @@ h.increment(key, by = 1)          # send an add; returns nil
 h.async_call  {|h, *args| ... }   # send it, do not wait; returns nil
 h.call        {|h, *args| ... }   # send it and wait; returns what the block returned
 h.future_call {|h, *args| ... }   # send it, get a Future straight away
+
+h.sync_send(:name, *args)         # the same three, by method name
+h.async_send(:name, *args)
+h.future_send(:name, *args)
+h.active_object_class             # Ractor::ActorHash
 ```
+
+There is no `size` and no `empty?`, for the reason
+[`LockHash`](lockhash.md) has none: a count is stale by the time it reaches you.
+
+**What comes back is subject to the ordinary Ractor rules**, not always a copy: a
+shareable value crosses by reference, an unshareable but copyable one is copied,
+and one that cannot be moved or copied raises
+`Ractor::ActiveObject::Error`. The practical point stands, which is that mutating
+what you got back does not reach the owner's hash.
 
 There is no `h[key] = value`. A change is a message you send, and an assignment
 does not look like one; more to the point, having it invites the two round trips

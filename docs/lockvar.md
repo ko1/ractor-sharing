@@ -22,15 +22,18 @@ p counter.value #=> 4000
 
 ## API
 
-The whole API is two methods:
-
 ```ruby
 lv = Ractor::LockVar.new(initial = nil)
 
 lv.value               # read, under the lock -- a snapshot, never an input to update
 lv.update {|v| new_v } # replace the value, under the lock; returns new_v
-lv.increment(n = 1)    # the same as update {|v| v + n }
+lv.increment(n = 1)    # add n under the lock, as update {|v| v + n } would
+lv.inspect
 ```
+
+A variable, not a lock: there is no lock, unlock, or owner query. `value` and
+`update` are the whole of it, and `increment` is there because a counter is what
+a shared variable most often is.
 
 ### The value must be shareable
 
@@ -146,10 +149,12 @@ lv.update {|v| $log << v; v + 1 }   # logs exactly once
 Touching another LockVar from inside an update is refused:
 
 ```ruby
+a = Ractor::LockVar.new(1)
+b = Ractor::LockVar.new(2)
 a.update {|v| b.value }
-# => Ractor::LockVar::NestedLockError:
-#    already updating another Ractor::LockVar;
-#    use Ractor::TVar to update several variables together
+# => Ractor::NestedLockError:
+#    already inside another Ractor::LockVar;
+#    use Ractor::TVar to change several of them together
 ```
 
 Lock ordering is where locking goes wrong, and refusing the first nesting turns a
@@ -182,21 +187,17 @@ and checks after every run that no update was lost.
 
 ### Reading
 
-```ruby
-n.times.map {|i| Ractor.new(vars[i]) {|v| K.times { v.value } } }.each(&:join)
-```
-
 | Ractors | shared `LockVar#value` (ns) | shared `TVar#value` (ns) | own `LockVar#value` (ns) | own `TVar#value` (ns) |
 |---:|---:|---:|---:|---:|
-| 1 | 122 | 79 | 103 | 64 |
-| 2 | 245 | 39 | 57 | 40 |
-| 4 | 395 | 21 | 49 | 21 |
-| 8 | 388 | 16 | 22 | 17 |
-| 16 | 408 | 10 | 13 | 13 |
+| 1 | 112 | 81 | 102 | 79 |
+| 2 | 234 | 42 | 60 | 37 |
+| 4 | 410 | 36 | 43 | 34 |
+| 8 | 418 | 16 | 21 | 16 |
+| 16 | 437 | 9 | 13 | 9 |
 
 **A shared `LockVar` does not scale for reading, and this is the number to know
 before choosing it.** `#value` takes the lock, so sixteen Ractors reading one
-variable stand in a queue and the read costs 408 ns instead of 13. `TVar#value`
+variable stand in a queue and the read costs 437 ns instead of 13. `TVar#value`
 outside a transaction takes nothing, so it reads the same whether the variable is
 shared or not. Give each Ractor a variable of its own and both scale to the
 machine's limit.
@@ -213,18 +214,18 @@ v.update {|rec| { status: rec[:status], seq: rec[:seq] + 1 }.freeze }
 
 | Ractors | shared `LockVar#update` (ns) | shared `TVar` `atomically` (ns) | own `LockVar#update` (ns) | own `TVar` `atomically` (ns) |
 |---:|---:|---:|---:|---:|
-| 1 | 394 | 335 | 352 | 333 |
-| 2 | 832 | 367 | 208 | 208 |
-| 4 | 1095 | 448 | 109 | 116 |
-| 8 | 1054 | 485 | 57 | 100 |
-| 16 | 1025 | 812 | 51 | 110 |
+| 1 | 396 | 338 | 365 | 328 |
+| 2 | 829 | 368 | 215 | 213 |
+| 4 | 1090 | 379 | 105 | 155 |
+| 8 | 1078 | 544 | 61 | 100 |
+| 16 | 1154 | 833 | 50 | 108 |
 
 **Fought over, neither scales and `TVar` is ahead**, because the loser of a race
 retries a short block where `LockVar` parks the thread and wakes it through a
 port, which costs more than the block did. The gap closes at sixteen, where
 `TVar` spends more of its time on work it discards.
 
-**Spread out, `LockVar` scales and `TVar` does not**: 352 ns down to 51 is 6.9×,
+**Spread out, `LockVar` scales and `TVar` does not**: 365 ns down to 50 is 7.3×,
 against 3.0× for `TVar`. Every committing transaction takes one process wide lock
 to allocate the next version number, whichever variable it touched, and that lock
 is the ceiling.
@@ -239,7 +240,7 @@ block runs once.
 
 `LockVar#increment` and `TVar#increment` each take a fast path that adds two
 Fixnums without running any Ruby, so they are not a measurement of either class:
-62 ns and 63 ns for one Ractor on its own variable, 323 ns and 157 ns for sixteen
+80 ns and 77 ns for one Ractor on its own variable, 366 ns and 162 ns for sixteen
 on one.
 
 ## Implementation notes
