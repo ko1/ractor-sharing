@@ -116,7 +116,7 @@ process ends, since there is no way to stop one, so this is for a handful of
 long-lived objects, not for many small ones. And every call from another Ractor
 is a message round trip: a `sync` call is about **2.6 µs** from a worker Ractor,
 against **0.35 µs** for an uncontended `LockVar#update` on the same machine. An
-`async` call does not wait for the reply and costs about **1.5 µs**. Calls
+`async` call does not wait for the reply and costs about **1.6 µs**. Calls
 to one object are also serialized through its owner, so the object is a
 throughput limit as well as a home for the state. If your state does fit in a
 shareable value, one of the first three will cost you far less.

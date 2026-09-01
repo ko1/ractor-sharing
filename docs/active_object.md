@@ -132,7 +132,7 @@ number of concurrent callers. A port whose wait was interrupted (e.g. by
 
 A caller waits on its reply port alone (`Port#receive`), not on
 `Ractor.select(reply, owner)`: watching the owner as well costs ≈4 % of a
-2 µs `sync` call. The owner is not expected to die, since its request loop
+2.5 µs `sync` call. The owner is not expected to die, since its request loop
 rescues `Exception`, and if it does go down with a request in flight it
 answers that caller with an `ActiveObject::Error` from an `ensure`, while any
 later send fails fast with `Ractor::ClosedError` → `ActiveObject::Error`.
