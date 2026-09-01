@@ -69,8 +69,8 @@ class LockHashTest < Test::Unit::TestCase
 
   def test_writes_outside_synchronize_are_refused
     [->{ @h[:b] = 2 }, ->{ @h.delete(:a) }, ->{ @h.clear }].each do |op|
-      e = assert_raise(Ractor::LockHash::NotSynchronizedError) { op.call }
-      assert_match(/outside #synchronize/, e.message)
+      e = assert_raise(NoMethodError) { op.call }
+      assert_match(/only allowed inside Ractor::LockHash#synchronize/, e.message)
     end
     assert_equal({ a: 1 }, @h.to_h, "nothing was written")
   end

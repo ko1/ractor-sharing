@@ -53,9 +53,11 @@ itself is frozen and shareable, so it can be passed to any Ractor.
 
 ```ruby
 h[:a] = 1
-# => Ractor::LockHash::NotSynchronizedError:
-#    cannot write outside #synchronize; wrap it: h.synchronize {|h| h[key] = value }
+# => NoMethodError: '[]=' is only allowed inside Ractor::LockHash#synchronize
 ```
+
+It is a `NoMethodError` for the same reason calling a private method is: the
+method is there, but not callable from where you are.
 
 Every write being inside a block is what makes reading an entry and writing it
 back one step rather than two:

@@ -15,7 +15,6 @@
  */
 
 static VALUE rb_cRactorLockHash;
-static VALUE rb_eNotSynchronized;
 static ID id_keys, id_zero_p;
 
 struct lockhash {
@@ -64,18 +63,19 @@ lockhash_check_shareable(VALUE val)
     }
 }
 
-/* Writes are only allowed from inside this hash's own #synchronize. */
+/* Writes are only allowed from inside this hash's own #synchronize.  Outside it
+ * the method is not callable at all, the way a private method is not. */
 static void
-lockhash_check_writable(VALUE self)
+lockhash_check_writable(VALUE self, const char *mid)
 {
     VALUE held = rs_held(rb_thread_current());
 
     if (held == self) return;
 
     if (NIL_P(held)) {
-        rb_raise(rb_eNotSynchronized,
-                 "cannot write outside #synchronize; wrap it: "
-                 "h.synchronize {|h| h[key] = value }");
+        rb_raise(rb_eNoMethodError,
+                 "'%s' is only allowed inside %"PRIsVALUE"#synchronize",
+                 mid, rb_obj_class(self));
     }
     rb_raise(rb_eRactorNestedLock,
              "already inside another %"PRIsVALUE"; "
@@ -263,7 +263,7 @@ lockhash_to_h(VALUE self)
 static VALUE
 lockhash_aset(VALUE self, VALUE key, VALUE value)
 {
-    lockhash_check_writable(self);
+    lockhash_check_writable(self, "[]=");
     lockhash_check_shareable(key);
     lockhash_check_shareable(value);
     rb_hash_aset(lockhash_ptr(self)->hash, key, value);
@@ -273,14 +273,14 @@ lockhash_aset(VALUE self, VALUE key, VALUE value)
 static VALUE
 lockhash_delete(VALUE self, VALUE key)
 {
-    lockhash_check_writable(self);
+    lockhash_check_writable(self, "delete");
     return rb_hash_delete(lockhash_ptr(self)->hash, key);
 }
 
 static VALUE
 lockhash_clear(VALUE self)
 {
-    lockhash_check_writable(self);
+    lockhash_check_writable(self, "clear");
     rb_hash_clear(lockhash_ptr(self)->hash);
     return self;
 }
@@ -336,7 +336,5 @@ Init_lockhash_class(void)
 
     rb_define_method(rb_cRactorLockHash, "inspect", lockhash_inspect, 0);
 
-    rb_eNotSynchronized = rb_define_class_under(rb_cRactorLockHash, "NotSynchronizedError",
-                                                rb_eRuntimeError);
     rb_define_const(rb_cRactorLockHash, "NestedLockError", rb_eRactorNestedLock);
 }
