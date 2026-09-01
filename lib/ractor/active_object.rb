@@ -122,7 +122,10 @@ class Ractor
         raise Error, "owner Ractor #{owner.inspect} terminated during initialization" if src.equal?(owner)
         raise __ao_restore_exception__(payload, backtrace) if status == :raise
 
-        Ractor.make_shareable(proxy_class.new(owner, payload))
+        # The proxy the owner built: there is exactly one per active object, so
+        # a method that returns self hands back this same object, and .equal?
+        # means what it says.
+        payload
       end
 
       # Class of the proxies returned by .new (a subclass of ActiveObject::Proxy).
@@ -208,9 +211,11 @@ class Ractor
           __ao_reply__(boot, :raise, e)
           return
         end
-        boot << [:ok, port]
-
-        proxy = klass.proxy_class.new(Ractor.current, port).freeze
+        # The one proxy for this object, made shareable so it crosses every
+        # port by reference: .new returns it, and so does a method returning
+        # self.  A bare .freeze here used to leave .new building a second one.
+        proxy = Ractor.make_shareable(klass.proxy_class.new(Ractor.current, port))
+        boot << [:ok, proxy]
         pending = pending_name = nil
         begin
           loop do

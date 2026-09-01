@@ -3,6 +3,15 @@
 require_relative "test_helper"
 
 class TestActiveObject < Test::Unit::TestCase
+  test "there is one proxy per object, and returning self hands it back" do
+    k = Class.new(Ractor::ActiveObject) do
+      sync def bump = self
+    end
+    p1 = k.new
+    assert_true p1.equal?(p1.bump), "the same proxy object, not a second one"
+    assert_true Ractor.new(p1) { |x| x.bump.equal?(x) }.value, "from another Ractor too"
+  end
+
   test "a frozen shareable exception from the servant arrives unmasked" do
     k = Class.new(Ractor::ActiveObject) do
       sync def boom = raise(Ractor.make_shareable(RuntimeError.new("frozen boom")))
