@@ -7,8 +7,9 @@ class Ractor
   # change is work you send, and the work runs where the Hash is.
   #
   #   h = Ractor::ActorHash.new
-  #   h.async_call {|h| h[:hits] += 1 }   # send it and carry on
+  #   h.increment(:hits)                  # send it and carry on
   #   h[:hits]                            # ask
+  #   h.async_call {|h| (h[:log] ||= []) << line }
   #
   # Because the entries never leave that Ractor except as copies, they do not
   # have to be shareable the way Ractor::LockHash's do: a value can be an Array
@@ -16,6 +17,16 @@ class Ractor
   class ActorHash < ActiveObject
     def initialize(initial = nil)
       @h = initial.nil? ? {} : initial.to_hash.dup
+    end
+
+    # Sent and not waited for: the arguments travel as arguments, so unlike a
+    # block they can be anything, reassigned locals included.
+    async def set(key, value)
+      @h[key] = value
+    end
+
+    async def increment(key, by = 1)
+      @h[key] = (@h[key] || 0) + by
     end
 
     sync def [](key) = @h[key]

@@ -38,18 +38,33 @@ h.key?(key)
 h.size / h.empty?
 h.keys / h.to_h        # a copy of the whole thing
 
+h.set(key, value)                 # send a write; returns nil
+h.increment(key, by = 1)          # send an add; returns nil
+
 h.async_call  {|h, *args| ... }   # send it, do not wait; returns nil
 h.call        {|h, *args| ... }   # send it and wait; returns what the block returned
 h.future_call {|h, *args| ... }   # send it, get a Future straight away
 ```
 
-There is no `h[key] = value`, and no `delete` or `clear`. Every change goes
-through a block, which is what keeps a change from being torn in half:
+There is no `h[key] = value`. A change is a message you send, and an assignment
+does not look like one; more to the point, having it invites the two round trips
+with a gap in the middle:
 
 ```ruby
-h[:n] = h[:n] + 1                    # not available, and it was two round trips
-h.async_call {|h| h[:n] += 1 }       # one message, and you do not wait for it
+h[:n] = h[:n] + 1              # not available, and it was a lost update
+h.increment(:n)                # one message, and you do not wait for it
 ```
+
+`set` and `increment` are not shorthand for the block forms. **Their arguments
+travel as arguments**, so they are not held to what an isolated block may capture:
+
+```ruby
+key = pick_one                       # a local that is assigned more than once
+h.async_call {|h| h[key] = 1 }       # => Ractor::IsolationError
+h.set(key, 1)                        # fine
+```
+
+For anything else — deleting, clearing, changing a value in place — send a block.
 
 `async` and `future` mean what they mean for
 [`Ractor::ActiveObject`](active_object.md), which this is built on: an exception

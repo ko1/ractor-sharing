@@ -66,6 +66,7 @@ changes are work you send, and you need not wait for them.
 
 ```ruby
 h = Ractor::ActorHash.new
+h.increment(:hits)
 h.async_call {|h| (h[:log] ||= []) << line }
 h[:log]
 ```

@@ -12,7 +12,8 @@ class ActorHashTest < Test::Unit::TestCase
   def test_the_api_reads_directly_but_writes_through_a_block
     api = (Ractor::ActorHash::Proxy.instance_methods - Object.instance_methods).sort
     assert_equal %i[[] active_object_class async_call async_send call empty? fetch
-                    future_call future_send key? keys size sync_send to_h].sort, api
+                    future_call future_send increment key? keys set size sync_send
+                    to_h].sort, api
     assert_not_include api, :[]=, "every change goes through a call"
     assert_not_include api, :delete
     assert_not_include api, :clear
@@ -66,6 +67,44 @@ class ActorHashTest < Test::Unit::TestCase
 
   def test_inspect
     assert_equal "#<Ractor::ActorHash {a: 1}>", @h.inspect
+  end
+
+  # --- set / increment ------------------------------------------------------
+
+  def test_set
+    assert_nil @h.set(:b, 2), "sent, not waited for"
+    assert_equal 2, @h[:b]
+    @h.set(:b, [1, 2])
+    assert_equal [1, 2], @h[:b], "any value, not only shareable ones"
+  end
+
+  def test_increment
+    assert_nil @h.increment(:n)
+    assert_equal 1, @h[:n]
+    @h.increment(:n, 5)
+    @h.increment(:n, -2)
+    assert_equal 4, @h[:n]
+    @h.increment(:a)
+    assert_equal 2, @h[:a], "an existing value is added to"
+  end
+
+  # The reason these exist at all: arguments travel as arguments, so they are
+  # not held to what an isolated block may capture.
+  def test_set_takes_values_a_block_could_not_capture
+    key = :x
+    key = :y
+    value = [1]
+    value = [1, 2]
+    assert_raise(Ractor::IsolationError) { @h.async_call { |h| h[key] = value } }
+    assert_nil @h.set(key, value)
+    assert_equal [1, 2], @h[:y]
+  end
+
+  def test_increment_of_a_value_that_cannot_be_added_to
+    @h.set(:sym, :not_a_number)
+    @h.increment(:sym)                    # async: the owner reports it and carries on
+    assert_equal :not_a_number, @h[:sym]
+    assert_equal 1, @h[:a], "the owner is still serving"
   end
 
   # --- what it is for -------------------------------------------------------
