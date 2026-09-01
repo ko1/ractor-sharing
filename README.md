@@ -127,31 +127,67 @@ h[:log]
 
 ## Performance
 
-Nanoseconds for one operation, counted across all Ractors, on 16 cores.
+The workload is one shared record, a frozen `{status:, seq:}`: a **read** takes it
+out, a **write** puts a new frozen one in its place. Nanoseconds for one
+operation, counted across all Ractors, on 16 cores.
 
-| | one Ractor | 16 on one object | 16 on their own | spreading out |
-|---|---:|---:|---:|---|
-| `TVar#increment` | 60 | **157** | 79 | does not help |
-| `LockVar#increment` | 121 | 426 | **16** | 7.6× faster |
-| `LockHash#synchronize` | 192 | 628 | 25 | 7.7× faster |
-| `ActiveObject` sync method | 2202 | 1380 | 713 | 3.1× faster |
-| `ActorHash#call` | 3197 | 2043 | 789 | 4.1× faster |
-| no sharing at all | 24 | n/a | 3 | 8× faster |
+### Reading
 
-Three things to read off it. **Spread out, the locks scale as far as the machine
-does** and `TVar` does not, because every committing transaction takes one
-process-wide lock to allocate its version number. **Fought over, `TVar` wins**,
-because losing a race and retrying an operation that small is cheaper than
-parking a thread and waking it. **The two that keep a Ractor cost microseconds
-either way**, and a Ractor each.
+| | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
+|---|---:|---:|---:|
+| `TVar#value` | 79 | **10** | 13 |
+| `LockVar#value` | 122 | 408 | 13 |
+| `LockHash#[]` | 110 | 438 | 18 |
+| `ActiveObject` sync method | 2317 | 1395 | 713 |
+| `ActorHash#[]` | 2010 | 1434 | 722 |
+| no sharing at all | 86 | n/a | 9 |
 
-The last row is the machine's own ceiling: 8× is as far as anything here scales.
-Called from the main Ractor rather than a worker, the last two cost about 8.9 µs
-instead of 2, because that thread has a native thread to itself and waking it is
-a syscall.
+**Reads of a shared object scale on `TVar` and do not on the two locks.** A
+`TVar` read outside a transaction takes nothing, so sixteen Ractors reading one
+`TVar` cost the same as sixteen reading their own. `LockVar#value` and
+`LockHash#[]` take the lock, so those sixteen readers stand in a queue. Give each
+Ractor its own object and every one of them scales to the machine's limit.
 
-`benchmark/family.rb` produces this table, and sweeps 1, 2, 4, 8 and 16 Ractors
-under both conditions. These numbers are from ruby 4.1.0dev (master 69b49ac7ae)
+### Writing
+
+| | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
+|---|---:|---:|---:|
+| `TVar` transaction | 335 | 812 | 110 |
+| `LockVar#update` | 394 | 1025 | **51** |
+| `LockHash#synchronize` | 439 | 1263 | 57 |
+| `ActiveObject` sync method | 2749 | 1607 | 745 |
+| `ActiveObject` async method | 1494 | 789 | **147** |
+| `ActorHash#call` | 3178 | 2006 | 750 |
+| `ActorHash#async_call` | 2461 | 1001 | 244 |
+| no sharing at all | 171 | n/a | 22 |
+
+**Fought over, nothing scales and `TVar` is usually ahead**, because losing a race
+and running a short block again is cheaper than parking a thread and waking it.
+**Spread out, the locks scale as far as the machine does and `TVar` does not**,
+because every committing transaction takes one process wide lock to allocate its
+version number. **Not waiting for the reply is worth 3× to 5×** on the two
+classes that keep a Ractor, and that is the whole difference between their sync
+and async rows.
+
+The `no sharing at all` row is the machine's own ceiling: 8× is as far as
+anything here scales. Called from the main Ractor rather than a worker, the two
+Ractor backed classes cost about 8.9 µs instead of 2, because that thread has a
+native thread to itself and waking it is a syscall.
+
+### Not increment
+
+`TVar#increment` and `LockVar#increment` each take a fast path that adds two
+Fixnums without running any Ruby, so a benchmark built on `increment` measures
+that path rather than the class. It gets a table of its own:
+
+| | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
+|---|---:|---:|---:|
+| `LockVar#increment` | 62 | 323 | **8** |
+| `TVar#increment` | 63 | **157** | 78 |
+
+`benchmark/family.rb` produces all of these, sweeping 1, 2, 4, 8 and 16 Ractors
+over read, write and a 9:1 mix, under both conditions, and checks after every run
+that no update was lost. These numbers are from ruby 4.1.0dev (master 69b49ac7ae)
 on 16 cores with the CPU governor fixed at `performance`, one run per cell.
 
 ## What is not here

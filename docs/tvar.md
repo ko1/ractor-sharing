@@ -91,10 +91,22 @@ lock and does the whole add in one step.
 
 ## Scaling
 
-Every committing transaction takes one process-wide lock to allocate its version
-number, whichever variables it touched, so commits do not run in parallel: on
-sixteen Ractors updating sixteen *unrelated* TVars, throughput is about 1.4× that
-of one Ractor. Transaction bodies do run in parallel; it is the commit that does
-not.
+**Reads outside a transaction cost nothing and scale.** Sixteen Ractors reading
+one shared TVar cost 10 ns per read, the same as sixteen reading their own, where
+the pessimistic [`Ractor::LockVar`](lockvar.md) costs 408 ns for the same thing
+because its read takes the lock. If your load is read heavy and the state is
+shared, this is the reason to be here.
+
+**Commits do not run in parallel.** Every committing transaction takes one
+process wide lock to allocate its version number, whichever variables it touched.
+Sixteen Ractors updating sixteen *unrelated* TVars get about 3× the throughput of
+one, where sixteen LockVars get 6.9×; on an update as small as `increment` the
+TVar figure falls to roughly 1.4×, since the commit is then most of the work.
+Transaction bodies do run in parallel; it is the commit that does not.
+
+**Fought over, retrying beats waiting.** Sixteen Ractors updating the *same*
+variable cost 812 ns per completed update against 1025 for a LockVar, because the
+loser of a race runs a short block again rather than parking a thread and waking
+it. The full tables are in [the README](../README.md#performance).
 
 Part of [ractor-sharing](../README.md).

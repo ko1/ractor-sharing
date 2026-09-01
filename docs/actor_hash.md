@@ -27,6 +27,11 @@ ends, and about **2 µs** for a round trip, where a LockHash operation is a few
 hundred **ns**. Reach for this one when the state genuinely will not be frozen;
 otherwise LockHash is far cheaper.
 
+A write that does not need an answer should be `async_call` or `set` rather than
+`call`: not waiting for the reply is worth 3× on sixteen Ractors with a hash each
+(244 ns against 750) and 2× on sixteen sharing one (1001 ns against 2006). Reads
+pay the full round trip regardless, since a read is the answer.
+
 ## API
 
 ```ruby

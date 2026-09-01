@@ -120,6 +120,13 @@ other**, and a snapshot is O(n). A hash written to constantly is better modelled
 as one [`Ractor::LockVar`](lockvar.md) per key, which scales with the cores.
 That is open to you whenever you never need two keys to change together.
 
+**Reads take the lock too, so they do not scale either.** Sixteen Ractors reading
+one shared LockHash cost 438 ns per read, against 18 ns when each has a hash of
+its own; a [`Ractor::TVar`](tvar.md) read costs 10 ns either way, because it takes
+no lock. Entries live in a table that a write rebuilds, so a reader cannot be let
+in beside a writer the way a TVar's single slot can. If your load is read heavy
+and the hash is shared, that is the number that will decide it.
+
 Acquisition is not FIFO: a thread may barge ahead of waiters, so readers hammering
 a hash in a tight loop can starve a writer. Keep sections short, and give busy
 reader loops something else to do between reads.
