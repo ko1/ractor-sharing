@@ -28,11 +28,11 @@ off it only for a reason the others below name.
 
 | | reach for it when | read | write |
 |---|---|---:|---:|
-| [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 72 ns | 339 ns |
-| [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 74 ns | 349 ns |
-| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | the same, but the keys are not known in advance | 139 ns | 431 ns |
-| [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.5 µs | 2.6 µs |
-| [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.3 µs | 3.0 µs |
+| [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 81 ns | 352 ns |
+| [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 74 ns | 346 ns |
+| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | the same, but the keys are not known in advance | 136 ns | 444 ns |
+| [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.4 µs | 2.7 µs |
+| [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.4 µs | 3.2 µs |
 
 One uncontended operation from a single Ractor on 16 cores, replacing a frozen
 record. The two at the bottom also start a Ractor apiece, which runs until the
@@ -157,17 +157,17 @@ operation, counted across all Ractors, on 16 cores.
 
 | | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
 |---|---:|---:|---:|
-| `TVar#value` | 72 | **9** | 9 |
-| `LockVar#value` | 74 | 347 | 10 |
-| `LockHash#[]` | 139 | 488 | 18 |
-| `ActiveObject` sync method | 2497 | 1435 | 737 |
-| `ActorHash#[]` | 2261 | 1366 | 727 |
-| no sharing at all | 63 | n/a | 8 |
+| `TVar#value` | 81 | **9** | 9 |
+| `LockVar#value` | 74 | 343 | 10 |
+| `LockHash#[]` | 136 | 494 | 21 |
+| `ActiveObject` sync method | 2389 | 1437 | 743 |
+| `ActorHash#[]` | 2356 | 1404 | 726 |
+| no sharing at all | 79 | n/a | 8 |
 
 **Reads of a shared object scale on `TVar` and do not on the two locks.** A
 `TVar` read outside a transaction takes nothing, so sixteen Ractors reading one
 `TVar` cost the same as sixteen reading their own. `LockVar#value` and
-`LockHash#[]` take the lock, so those sixteen readers stand in a queue: 347 ns
+`LockHash#[]` take the lock, so those sixteen readers stand in a queue: 343 ns
 against 9. Give each Ractor its own object and every one of them scales to the
 machine's limit.
 
@@ -175,21 +175,25 @@ machine's limit.
 
 | | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
 |---|---:|---:|---:|
-| `TVar` transaction | 339 | **910** | 107 |
-| `LockVar#update` | 349 | 1194 | **47** |
-| `LockHash#synchronize` | 431 | 1353 | 59 |
-| `ActiveObject` async method | 1511 | 839 | 179 |
-| `ActiveObject` sync method | 2629 | 1607 | 757 |
-| `ActorHash#async_call` | 1937 | 1028 | 216 |
-| `ActorHash#call` | 2963 | 1744 | 754 |
-| no sharing at all | 118 | n/a | 19 |
+| `TVar` transaction | 352 | **451** | 108 |
+| `LockVar#update` | 346 | 1066 | **48** |
+| `LockHash#synchronize` | 444 | 1335 | 60 |
+| `ActiveObject` async method | 1545 | 822 | 169 |
+| `ActiveObject` sync method | 2666 | 1587 | 755 |
+| `ActorHash#async_call` | 1873 | 1047 | 218 |
+| `ActorHash#call` | 3244 | 1729 | 761 |
+| no sharing at all | 119 | n/a | 18 |
 
-**Fought over, nothing scales and `TVar` is ahead**, because losing a race and
-running a short block again is cheaper than parking a thread and waking it.
+**Fought over, nothing scales and `TVar` stays 2.4× ahead**, because losing a
+race and running a short block again is cheaper than parking a thread and waking
+it, and a transaction that keeps losing backs off before running again, which
+holds its cost flat as Ractors are added. That backoff has a price elsewhere: a
+write that is contended only now and then pays about a microsecond when it loses
+twice in a row, which is what moved the 9:1 mix from 89 to 147 ns.
 **Spread out, the locks scale as far as the machine does and `TVar` does not**:
-7.4× for `LockVar` against 3.2×, because every committing transaction takes one
+7.2× for `LockVar` against 3.3×, because every committing transaction takes one
 process wide lock to allocate its version number. **Not waiting for the reply is
-worth 3× to 4× when the objects are spread out** on the two classes that keep a
+worth 3× to 5× when the objects are spread out** on the two classes that keep a
 Ractor (16 on their own, sync against async above); on one shared object the
 serialisation at the owner leaves it under 2×, and from a single caller it is
 about 1.7×.
@@ -207,8 +211,8 @@ that path rather than the class. It gets a table of its own:
 
 | | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
 |---|---:|---:|---:|
-| `LockVar#increment` | 79 | 363 | **9** |
-| `TVar#increment` | 79 | **156** | 77 |
+| `LockVar#increment` | 82 | 360 | **8** |
+| `TVar#increment` | 75 | **158** | 75 |
 
 `benchmark/family.rb` produces all of these, sweeping 1, 2, 4, 8 and 16 Ractors
 over read, write and a 9:1 mix, under both conditions. Every worker reports ready

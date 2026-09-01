@@ -56,7 +56,7 @@ object caps how fast callers get through it.
 
 **An `async` method is the one to reach for when nothing needs the answer**, since
 the round trip is most of the cost: sixteen Ractors with an object each get
-through `async` calls at **0.18 µs**, against 0.76 µs for the same method declared
+through `async` calls at **0.17 µs**, against 0.76 µs for the same method declared
 `sync`. Reads have to be `sync`, because the answer is the point.
 
 None of that applies to calls made *inside* the owner: those are plain Ruby

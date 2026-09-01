@@ -452,9 +452,12 @@ tx_reset(struct tx_logs *tx)
     struct tx_global *txg = tx_global_ptr();
     tx->logs_cnt = 0;
 
-    // contention management (CM)
+    // contention management (CM): back off by 1us per retry seen in the last
+    // 32 attempts.  This had been dead twice over -- the popcount result was
+    // discarded by a split statement, and nothing ever set a bit in
+    // retry_history -- so the sleep below had never once run.
     if (tx->retry_history != 0) {
-        int recent_retries = 0; rb_popcount32(tx->retry_history);
+        int recent_retries = rb_popcount32(tx->retry_history);
         TVAR_DEBUG_LOG("retry recent_retries:%d", recent_retries);
 
         struct timeval tv = {
@@ -465,6 +468,11 @@ tx_reset(struct tx_logs *tx)
         TVAR_DEBUG_LOG("CM tv_usec:%lu", (unsigned long)tv.tv_usec);
         rb_thread_wait_for(tv);
     }
+
+    // Record this retry after the check above, so a lone retry in a calm
+    // window pays nothing and only consecutive ones back off.  A commit ages
+    // the window with the shift in tx_commit.
+    tx->retry_history = (tx->retry_history << 1) | 1;
 
     tx_setup(txg, tx);
     TVAR_DEBUG_LOG("tx:%lu", tx->version);
@@ -527,7 +535,11 @@ tx_commit(struct tx_logs *tx)
     }
 
     // ok
-    tx->retry_history <<= 1;
+    /* A success ends the losing streak, so the window counts consecutive
+     * losses: an occasional loser pays nothing, a storm backs off by its own
+     * length.  (Shift-decay measured the same in the storm and no better in
+     * the occasional case.) */
+    tx->retry_history = 0;
 
     uint64_t new_version = txg_next_version(txg);
 
