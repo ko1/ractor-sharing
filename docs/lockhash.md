@@ -131,7 +131,7 @@ as one [`Ractor::LockVar`](lockvar.md) per key, which scales with the cores.
 That is open to you whenever you never need two keys to change together.
 
 **Reads take the lock too, so they do not scale either.** Sixteen Ractors reading
-one shared LockHash cost 408 ns per read, against 18 ns when each has a hash of
+one shared LockHash cost 480 ns per read, against 17 ns when each has a hash of
 its own; a [`Ractor::TVar`](tvar.md) read costs 9 ns whether it is shared or not,
 because it takes no lock. One exclusive lock covers the whole hash, so a reader cannot be let in beside a
 writer the way a TVar's single slot can. If your load is read heavy

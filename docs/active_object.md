@@ -47,7 +47,7 @@ Requires Ruby 4.0 or later (`Ractor::Port`).
 Each instance starts a Ractor of its own, and that Ractor runs until the process
 ends: there is no shutdown. Creating active objects in a loop leaks them.
 
-Every `sync` call from another Ractor is a message round trip, about **2.6 µs**
+Every `sync` call from another Ractor is a message round trip, about **2.5 µs**
 measured on 16 cores, where the same update on an uncontended
 `Ractor::LockVar` is **0.37 µs**. From the main Ractor rather than a worker it is
 **8.9 µs**, because that thread has a native thread to itself and waking it is a

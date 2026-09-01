@@ -238,8 +238,7 @@ static VALUE
 lockhash_sync_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
-    rs_held_set(arg->thread, arg->self);
-    return rb_yield(arg->self);
+    return rb_yield(arg->self);   /* rs_guarded has marked the lock held */
 }
 
 /* --- reads ---------------------------------------------------------------- */
