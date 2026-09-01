@@ -84,6 +84,21 @@ Reaching for two `LockVar`s at once is refused, with a message pointing here:
 that is the sign you wanted a `TVar`. Finding yourself freezing a copy of a
 collection on every update is the sign you wanted an `ActiveObject`.
 
+## What is not here
+
+These classes hold state. They are not a way for Ractors to wait for each other.
+
+A Ractor waits in one place — `Ractor::Port#receive` — and that is the design, not
+an accident. Waiting for another Ractor to produce something, hand work over or
+reach a point is a conversation between them, and it is held in messages. So
+there is no queue here that several Ractors take work from, no barrier, no
+semaphore: those would be a second place to wait, and a rendezvous dressed up as
+a data structure.
+
+The one wait these classes do is for a lock, and even that is a `receive`: a
+thread that cannot take a lock parks on a `Ractor::Port` of its own until the
+holder sends it a wakeup.
+
 ## Requirements
 
 Ruby 4.0 or later (`Ractor::Port`, and Ractors that are worth using).
