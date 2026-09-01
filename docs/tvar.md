@@ -1,13 +1,35 @@
 # Ractor::TVar
 
-Several variables that change together.
+A variable Ractors can share, and the one to reach for first.
 [Software transactional memory](https://en.wikipedia.org/wiki/Software_transactional_memory)
-for Ractors and Threads: read and write any number of TVars inside
-`Ractor.atomically`, and the whole set either takes effect or does not.
+for Ractors and Threads: read and write as many TVars as you like inside
+`Ractor.atomically`, and everything that block changes takes effect together or
+not at all.
+
+A TVar holds any shareable object, not only a number:
 
 ```ruby
 require "ractor/tvar"
 
+config  = Ractor::TVar.new({ mode: :idle }.freeze)
+version = Ractor::TVar.new("v1".freeze)
+
+Ractor.atomically do
+  config.value  = config.value.merge(mode: :running).freeze
+  version.value = "v2".freeze             # nobody sees v1 running, or v2 idle
+end
+```
+
+One variable is a transaction with one variable in it, and reads the same way:
+
+```ruby
+seen = Ractor::TVar.new([].freeze)
+Ractor.atomically { seen.value = (seen.value + [:x]).freeze }
+```
+
+Where two variables have to agree, that is the whole point:
+
+```ruby
 from = Ractor::TVar.new(100)
 to   = Ractor::TVar.new(0)
 
