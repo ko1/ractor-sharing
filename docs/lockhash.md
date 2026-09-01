@@ -24,7 +24,8 @@ You can put a frozen Hash in a [`Ractor::LockVar`](lockvar.md), but then changin
 one entry copies the whole thing:
 
 ```ruby
-lv.update { it.merge(k => v).freeze }   # O(n) per write
+lv = Ractor::LockVar.new({}.freeze)
+lv.update { it.merge(k: 1).freeze }   # O(n) per write
 ```
 
 `LockHash` keeps a real Hash and writes into it, so one entry costs one entry.
@@ -63,8 +64,13 @@ Every write being inside a block is what makes reading an entry and writing it
 back one step rather than two:
 
 ```ruby
+# WRONG: refused, and it was a lost update anyway
+h[:hits] = h[:hits] + 1
+```
+
+```ruby
+h = Ractor::LockHash.new(hits: 0)
 h.synchronize {|h| h[:hits] = h[:hits] + 1 }   # right
-h[:hits] = h[:hits] + 1                        # refused, and it was a lost update
 ```
 
 The block is handed the LockHash, **never the Hash inside it**, so no reference
@@ -76,8 +82,11 @@ Almost everything a shared hash gets used for is one of these, and both are one
 `synchronize`:
 
 ```ruby
-h.synchronize {|h| h[k] ||= expensive }          # memoize: computed once, by one caller
-h.synchronize {|h| h[k] = (h[k] || 0) + 1 }      # count: read and write in one step
+h = Ractor::LockHash.new
+k = :key
+
+h.synchronize {|h| h[k] ||= 42 }                 # memoize: computed once, by one caller
+h.synchronize {|h| h[:n] = (h[:n] || 0) + 1 }    # count: read and write in one step
 ```
 
 There is no `compute` or `fetch_or_store` here. One lock covers the whole hash,
@@ -91,6 +100,8 @@ Everything it changes becomes visible together. A reader calling `[]` or `to_h`
 waits for a section in flight rather than looking inside one:
 
 ```ruby
+board = Ractor::LockHash.new
+i = 1
 board.synchronize {|b| b[:x] = i; b[:y] = i }   # a reader never sees x != y
 ```
 

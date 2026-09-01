@@ -19,7 +19,7 @@ owner except as copies, so they can be anything, and a block changes them in
 place over there:
 
 ```ruby
-h.async_call {|h| (h[:log] ||= []) << line }   # a value it goes on appending to
+h.async_call {|h| (h[:log] ||= []) << "a line" }   # a value it goes on appending to
 ```
 
 The price is the owner: one Ractor per ActorHash, running until the process
@@ -59,7 +59,8 @@ h.increment(:n)                # one message, and you do not wait for it
 travel as arguments**, so they are not held to what an isolated block may capture:
 
 ```ruby
-key = pick_one                       # a local that is assigned more than once
+key = :a
+key = :b                             # a local assigned more than once
 h.async_call {|h| h[key] = 1 }       # => Ractor::IsolationError
 h.set(key, 1)                        # fine
 ```
@@ -99,9 +100,10 @@ read outer variables that are **never reassigned** anywhere in their scope, and
 everything else has to be passed as an argument.
 
 ```ruby
-n = compute
-h.async_call {|h| h[:total] += n }              # fine: n is never reassigned
-h.async_call(compute) {|h, n| h[:total] += n }  # always fine
+h.set(:total, 0)
+n = 10
+h.async_call {|h| h[:total] += n }         # fine: n is never reassigned
+h.async_call(10) {|h, n| h[:total] += n }  # always fine
 ```
 
 "Never reassigned" is judged from the whole enclosing scope: one later assignment

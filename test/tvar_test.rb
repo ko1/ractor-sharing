@@ -73,4 +73,83 @@ class Ractor::TVarTest < Test::Unit::TestCase
     rs.each{|r| r.value}
     assert_equal N * 4 , tv.value
   end
+
+  # --- what the documentation promises -------------------------------------
+
+  test "only shareable values are allowed" do
+    assert_raise(ArgumentError) { Ractor::TVar.new([]) }
+    tv = Ractor::TVar.new(0)
+    assert_raise(ArgumentError) { Ractor.atomically { tv.value = [] } }
+    assert_equal 0, tv.value, "a rejected write leaves the value alone"
+    Ractor.atomically { tv.value = [1].freeze }
+    assert_equal [1], tv.value
+  end
+
+  test "increment adds in one step" do
+    tv = Ractor::TVar.new(1)
+    assert_equal 2, tv.increment
+    assert_equal 7, tv.increment(5)
+    assert_equal 5, tv.increment(-2)
+    assert_equal 5, tv.value
+  end
+
+  test "a transaction is all or nothing" do
+    from = Ractor::TVar.new(100)
+    to   = Ractor::TVar.new(0)
+    Ractor.atomically { from.value -= 10; to.value += 10 }
+    assert_equal [90, 10], [from.value, to.value]
+
+    assert_raise(RuntimeError) do
+      Ractor.atomically { from.value -= 10; raise "boom" }
+    end
+    assert_equal 90, from.value, "the half that ran was rolled back"
+  end
+
+  test "a TVar is shareable and usable from another Ractor" do
+    tv = Ractor::TVar.new(1)
+    assert_true Ractor.shareable?(tv)
+    assert_equal 2, Ractor.new(tv) { |t| Ractor.atomically { t.value += 1 } }.value
+    assert_equal 2, tv.value
+  end
+
+  test "several Ractors updating one TVar lose nothing" do
+    tv = Ractor::TVar.new(0)
+    rs = 4.times.map { Ractor.new(tv) { |t| 500.times { Ractor.atomically { t.value += 1 } }; :ok } }
+    rs.each(&:join)
+    assert_equal 2000, tv.value
+  end
+
+  test "several Ractors keep two TVars in step" do
+    a = Ractor::TVar.new(0)
+    b = Ractor::TVar.new(0)
+    rs = 4.times.map do
+      Ractor.new(a, b) { |x, y| 300.times { Ractor.atomically { x.value += 1; y.value -= 1 } }; :ok }
+    end
+    rs.each(&:join)
+    assert_equal [1200, -1200], [a.value, b.value]
+    assert_equal 0, a.value + b.value
+  end
+
+  # The counter is a LockVar on purpose: a TVar would join the transaction and
+  # be rolled back with it, counting commits rather than runs. This is the
+  # documented hazard itself -- a side effect in the block happens again on
+  # every retry.
+  test "a block may run more than once, so keep it free of side effects" do
+    runs = Ractor::LockVar.new(0)
+    tv = Ractor::TVar.new(0)
+    rs = 4.times.map do
+      Ractor.new(tv, runs) do |t, r|
+        200.times { Ractor.atomically { r.increment; t.value += 1 } }
+        :ok
+      end
+    end
+    rs.each(&:join)
+    assert_equal 800, tv.value, "every increment landed exactly once"
+    assert_operator runs.value, :>, 800, "and the block ran more often than that"
+  end
+
+  test "the transaction errors exist" do
+    assert_operator Ractor::TransactionError, :<, RuntimeError
+    assert_operator Ractor::RetryTransaction, :<, Exception
+  end
 end

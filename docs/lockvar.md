@@ -59,6 +59,7 @@ are concerned — not just its final store. That is what an update block needs w
 it makes anything else observable:
 
 ```ruby
+lv = Ractor::LockVar.new(0)
 lv.update {|v| $last = v; v + 1 }   # every reader sees lv.value > $last
 ```
 
@@ -92,9 +93,11 @@ lv.update { h.merge(key => 1).freeze }
 
 ```ruby
 # RIGHT
+lv = Ractor::LockVar.new(0)
 lv.update { it + 1 }
 
-lv.update { it.merge(key => 1).freeze }
+h = Ractor::LockVar.new({}.freeze)
+h.update { it.merge(key: 1).freeze }
 ```
 
 Four Ractors incrementing 500 times each:
@@ -135,7 +138,9 @@ anything it did that was not a `TVar` write has already happened and will happen
 again. A `LockVar` update waits for its turn instead, and then runs once.
 
 ```ruby
-lv.update {|v| log << v; f(v) }   # logs exactly once
+$log = []
+lv = Ractor::LockVar.new(0)
+lv.update {|v| $log << v; v + 1 }   # logs exactly once
 ```
 
 Touching another LockVar from inside an update is refused:

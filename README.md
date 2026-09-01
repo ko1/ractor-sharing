@@ -45,8 +45,8 @@ one section changes appears at once. Atomic across its own keys, and only those.
 
 ```ruby
 board = Ractor::LockHash.new
-board.synchronize {|b| b[:me] = score }
-board.to_h
+board.synchronize {|b| b[:worker_1] = 42 }
+board.to_h #=> {worker_1: 42}
 ```
 
 **Several variables that must agree — `TVar`.** Moving a balance from one

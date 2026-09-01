@@ -95,6 +95,13 @@ time per object. A `sync` call therefore works as a barrier after `async`
 calls:
 
 ```ruby
+class Cache < Ractor::ActiveObject
+  def initialize = @c = {}
+  async def set(k, v) = @c[k] = v
+  sync  def nop = nil
+end
+cache = Cache.new
+
 cache.set(:x, 1)        # async
 cache.sync_send(:nop)   # everything above has been applied
 ```
@@ -137,6 +144,11 @@ blocked in `receive`.) Both were measured and rejected; see
 ### Futures
 
 ```ruby
+class Slow < Ractor::ActiveObject
+  future def compute(x) = x * 2
+end
+obj = Slow.new
+
 f = obj.future_send(:compute, 1)
 f.value       # waits; returns the result or raises the method's exception
 f.wait        # waits; returns self, never raises
