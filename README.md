@@ -122,8 +122,7 @@ Ruby 4.0 or later (`Ractor::Port`, and Ractors that are worth using).
 rake            # compile both extensions and run every test
 ```
 
-Documentation for each class is in [docs/](docs/); `docs/active_object-design.md`
-is the design note `ActiveObject` was built from.
+Documentation for each class is in [docs/](docs/).
 
 ## License
 
