@@ -11,8 +11,8 @@ class ActorHashTest < Test::Unit::TestCase
 
   def test_the_api_reads_directly_but_writes_through_a_block
     api = (Ractor::ActorHash::Proxy.instance_methods - Object.instance_methods).sort
-    assert_equal %i[[] active_object_class async_call async_send call empty? fetch
-                    future_call future_send increment key? keys set size sync_send
+    assert_equal %i[[] active_object_class async_call async_send call fetch
+                    future_call future_send increment key? keys set sync_send
                     to_h].sort, api
     assert_not_include api, :[]=, "every change goes through a call"
     assert_not_include api, :delete
@@ -24,8 +24,6 @@ class ActorHashTest < Test::Unit::TestCase
     assert_nil @h[:zz]
     assert_true @h.key?(:a)
     assert_false @h.key?(:zz)
-    assert_equal 1, @h.size
-    assert_false @h.empty?
     assert_equal [:a], @h.keys
     assert_equal({ a: 1 }, @h.to_h)
   end

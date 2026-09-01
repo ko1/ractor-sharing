@@ -31,8 +31,6 @@ class Ractor
 
     sync def [](key) = @h[key]
     sync def key?(key) = @h.key?(key)
-    sync def size = @h.size
-    sync def empty? = @h.empty?
     sync def keys = @h.keys
     sync def to_h = @h.dup
 

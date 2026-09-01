@@ -101,6 +101,16 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_equal 2, tv.value
   end
 
+  test "increment rejects an unshareable sum, inside a transaction as well as out" do
+    # The in-transaction path called + and stored whatever came back. A TVar only
+    # ever holds shareable values, and the sum of two frozen arrays is not one.
+    tv = Ractor::TVar.new([1].freeze)
+    assert_raise(ArgumentError) { Ractor.atomically { tv.increment([2].freeze) } }
+    assert_equal [1], tv.value
+    assert_raise(ArgumentError) { tv.increment([2].freeze) }
+    assert_equal [1], tv.value
+  end
+
   test "increment adds in one step" do
     tv = Ractor::TVar.new(1)
     assert_equal 2, tv.increment

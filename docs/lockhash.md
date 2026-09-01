@@ -38,7 +38,6 @@ h = Ractor::LockHash.new(initial = nil)
 h[key]                # read
 h.fetch(key, default) # read, with the usual default / block / KeyError
 h.key?(key)
-h.size / h.empty?
 h.keys / h.to_h       # a frozen, shareable snapshot of the whole hash
 
 h.synchronize {|h| ... }   # the only place writes are allowed

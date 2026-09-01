@@ -656,7 +656,12 @@ tvar_value_increment_(VALUE self, VALUE inc)
     else {
         recv = tx_get(tx, slot, self);
         if (RB_UNLIKELY((ret = tvar_calc_inc(recv, inc)) == Qundef)) {
+            /* + can return anything; a TVar only ever holds shareable values, and
+             * outside a transaction this path is checked by #value=. */
             ret = rb_funcall(recv, rb_intern("+"), 1, inc);
+            if (RB_UNLIKELY(!rb_ractor_shareable_p(ret))) {
+                rb_raise(rb_eArgError, "only shareable object are allowed");
+            }
         }
         tx_set(tx, ret, slot, self);
     }

@@ -184,12 +184,7 @@ lockhash_fetch_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockhash_op *op = arg->data;
-    VALUE found = lockhash_lookup(arg->self, op->key);
-
-    if (!RB_UNDEF_P(found)) return found;
-    if (op->argc > 1) return op->value;
-    if (rb_block_given_p()) return rb_yield(op->key);
-    rb_raise(rb_eKeyError, "key not found: %+"PRIsVALUE, op->key);
+    return lockhash_lookup(arg->self, op->key);
 }
 
 static VALUE
@@ -198,13 +193,6 @@ lockhash_key_p_body(VALUE ptr)
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockhash_op *op = arg->data;
     return RB_UNDEF_P(lockhash_lookup(arg->self, op->key)) ? Qfalse : Qtrue;
-}
-
-static VALUE
-lockhash_size_body(VALUE ptr)
-{
-    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
-    return LONG2FIX(lockhash_ptr(arg->self)->tbl->num_entries);
 }
 
 static int
@@ -276,8 +264,17 @@ static VALUE
 lockhash_fetch(int argc, VALUE *argv, VALUE self)
 {
     struct lockhash_op op = {Qnil, Qnil, argc};
+    VALUE found;
+
     rb_scan_args(argc, argv, "11", &op.key, &op.value);
-    return LOCKHASH_READ(self, lockhash_fetch_body, &op);
+    found = LOCKHASH_READ(self, lockhash_fetch_body, &op);
+    if (!RB_UNDEF_P(found)) return found;
+
+    /* The default runs with the lock released.  Held, a block that touched this
+     * hash again would wait for a lock its own frame is holding. */
+    if (rb_block_given_p()) return rb_yield(op.key);
+    if (argc > 1) return op.value;
+    rb_raise(rb_eKeyError, "key not found: %+"PRIsVALUE, op.key);
 }
 
 static VALUE
@@ -285,18 +282,6 @@ lockhash_key_p(VALUE self, VALUE key)
 {
     struct lockhash_op op = {key, Qnil, 1};
     return LOCKHASH_READ(self, lockhash_key_p_body, &op);
-}
-
-static VALUE
-lockhash_size(VALUE self)
-{
-    return LOCKHASH_READ(self, lockhash_size_body, NULL);
-}
-
-static VALUE
-lockhash_empty_p(VALUE self)
-{
-    return lockhash_ptr(self)->tbl->num_entries == 0 ? Qtrue : Qfalse;
 }
 
 /*
@@ -408,8 +393,6 @@ Init_lockhash_class(void)
     rb_define_method(rb_cRactorLockHash, "[]", lockhash_aref, 1);
     rb_define_method(rb_cRactorLockHash, "fetch", lockhash_fetch, -1);
     rb_define_method(rb_cRactorLockHash, "key?", lockhash_key_p, 1);
-    rb_define_method(rb_cRactorLockHash, "size", lockhash_size, 0);
-    rb_define_method(rb_cRactorLockHash, "empty?", lockhash_empty_p, 0);
     rb_define_method(rb_cRactorLockHash, "keys", lockhash_keys, 0);
     rb_define_method(rb_cRactorLockHash, "to_h", lockhash_to_h, 0);
 

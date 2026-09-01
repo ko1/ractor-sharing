@@ -40,7 +40,6 @@ h = Ractor::ActorHash.new(initial = nil)
 h[key]                 # read; the value comes back as a copy
 h.fetch(key)           # KeyError when missing; also fetch(key, default) and fetch(key) { }
 h.key?(key)
-h.size / h.empty?
 h.keys / h.to_h        # a copy of the whole thing
 
 h.set(key, value)                 # send a write; returns nil

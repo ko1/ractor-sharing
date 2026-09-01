@@ -17,7 +17,7 @@ class LockHashTest < Test::Unit::TestCase
   # --- API ----------------------------------------------------------------
 
   def test_public_api
-    assert_equal %i[[] []= clear delete empty? fetch inspect key? keys size
+    assert_equal %i[[] []= clear delete fetch inspect key? keys
                     synchronize to_h].sort,
                  Ractor::LockHash.instance_methods(false).sort
   end
@@ -25,8 +25,6 @@ class LockHashTest < Test::Unit::TestCase
   def test_reads
     assert_equal 1, @h[:a]
     assert_nil @h[:z]
-    assert_equal 1, @h.size
-    assert_false @h.empty?
     assert_true @h.key?(:a)
     assert_false @h.key?(:z)
     assert_equal({ a: 1 }, @h.to_h)
@@ -39,6 +37,22 @@ class LockHashTest < Test::Unit::TestCase
     assert_equal :d, @h.fetch(:z, :d)
     assert_equal :z, @h.fetch(:z) { |k| k }
     assert_raise(KeyError) { @h.fetch(:z) }
+  end
+
+  def test_fetch_default_runs_outside_the_lock
+    # Held, a block that touched this hash again would wait on a lock its own
+    # frame holds. It used to; the block now runs after the lookup releases it.
+    h = Ractor::LockHash.new
+    t = Thread.new { h.fetch(:missing) { h.synchronize { |x| x[:made] = 1 }; :from_block } }
+    assert_equal :from_block, t.value if assert_not_nil t.join(3), "fetch deadlocked"
+    assert_equal 1, h[:made]
+
+    t = Thread.new { h.fetch(:missing) { h[:made] } }
+    assert_equal 1, t.value if assert_not_nil t.join(3), "fetch deadlocked on a read"
+  end
+
+  def test_fetch_prefers_the_block_over_the_default
+    assert_equal :from_block, @h.fetch(:z, :from_default) { :from_block }
   end
 
   def test_snapshots_are_shareable
@@ -54,9 +68,7 @@ class LockHashTest < Test::Unit::TestCase
   end
 
   def test_empty_by_default
-    h = Ractor::LockHash.new
-    assert_true h.empty?
-    assert_equal({}, h.to_h)
+    assert_equal({}, Ractor::LockHash.new.to_h)
   end
 
   def test_initial_must_be_shareable
@@ -78,9 +90,9 @@ class LockHashTest < Test::Unit::TestCase
   def test_writes_inside_synchronize
     assert_equal 2, @h.synchronize { |h| h[:b] = 2; h[:a] += 1; h.delete(:zz); h[:a] }
     assert_equal({ a: 2, b: 2 }, @h.to_h)
-    assert_equal 1, @h.synchronize { |h| h.delete(:b); h.size }
+    assert_equal [:a], @h.synchronize { |h| h.delete(:b); h.keys }
     @h.synchronize(&:clear)
-    assert_true @h.empty?
+    assert_equal({}, @h.to_h)
   end
 
   def test_synchronize_yields_self

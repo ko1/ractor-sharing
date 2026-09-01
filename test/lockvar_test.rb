@@ -3,6 +3,9 @@
 require_relative "test_helper"
 
 class LockVarTest < Test::Unit::TestCase
+  FIXNUM_MAX = 2**(0.size * 8 - 2) - 1
+  FIXNUM_MIN = -(2**(0.size * 8 - 2))
+
   HELD = 0.15 # how long a holder keeps the lock when a test needs it held
 
   # "Is it still held" can only be observed by trying to take it, which is also
@@ -159,6 +162,47 @@ class LockVarTest < Test::Unit::TestCase
     rs = 4.times.map { Ractor.new(lv) { |v| 300.times { v.increment }; :ok } }
     rs.each(&:join)
     assert_equal 1200, lv.value
+  end
+
+  def test_increment_crosses_the_fixnum_boundary
+    # The fast path only adds two Fixnums whose sum is still a Fixnum; either end
+    # of that range has to fall through to +, and the lock has to survive it.
+    lv = Ractor::LockVar.new(FIXNUM_MAX)
+    assert_equal FIXNUM_MAX + 1, lv.increment
+    assert_equal FIXNUM_MAX + 2, lv.increment
+    assert_acquirable lv
+
+    lv = Ractor::LockVar.new(FIXNUM_MIN)
+    assert_equal FIXNUM_MIN - 1, lv.increment(-1)
+    assert_acquirable lv
+  end
+
+  def test_increment_across_the_boundary_is_atomic
+    start = FIXNUM_MAX - 200
+    lv = Ractor::LockVar.new(start)
+    rs = 4.times.map { Ractor.new(lv) { |v| 300.times { v.increment }; :ok } }
+    rs.each(&:join)
+    assert_equal start + 1200, lv.value
+  end
+
+  def test_increment_with_a_float_amount_on_a_fixnum
+    lv = Ractor::LockVar.new(1)
+    assert_equal 1.5, lv.increment(0.5)
+    assert_acquirable lv
+  end
+
+  def test_increment_while_another_lock_is_held_is_refused
+    lv, other = Ractor::LockVar.new(0), Ractor::LockVar.new(0)
+    assert_raise(Ractor::NestedLockError) { other.update { lv.increment } }
+    assert_equal 0, lv.value
+    assert_equal 0, other.value
+    assert_acquirable lv
+    assert_acquirable other
+
+    h = Ractor::LockHash.new
+    assert_raise(Ractor::NestedLockError) { h.synchronize { lv.increment } }
+    assert_equal 0, lv.value
+    assert_acquirable lv
   end
 
   def test_increment_inside_an_update_is_refused
