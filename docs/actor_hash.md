@@ -23,14 +23,14 @@ h.async_call {|h| (h[:log] ||= []) << "a line" }   # a value it goes on appendin
 ```
 
 The price is the owner: one Ractor per ActorHash, running until the process
-ends, and about **2.4 µs** for a round trip, where a LockHash operation is a few
+ends, and about **2.2 µs** for a round trip, where a LockHash operation is a few
 hundred **ns**. Reach for this one when the state genuinely will not be frozen;
 otherwise LockHash is far cheaper.
 
 A write that does not need an answer should be `async_call` or `set` rather than
 `call`: not waiting for the reply is worth about 3× on sixteen Ractors with a
-hash each (218 ns against 761) and under 2× on sixteen sharing one (1047 ns
-against 1729). Reads pay the full round trip regardless, since a read is the
+hash each (219 ns against 747) and under 2× on sixteen sharing one (1032 ns
+against 1740). Reads pay the full round trip regardless, since a read is the
 answer.
 
 ## API

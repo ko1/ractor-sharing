@@ -460,13 +460,18 @@ tx_reset(struct tx_logs *tx)
         int recent_retries = rb_popcount32(tx->retry_history);
         TVAR_DEBUG_LOG("retry recent_retries:%d", recent_retries);
 
-        struct timeval tv = {
-            .tv_sec = 0,
-            .tv_usec = 1 * recent_retries,
-        };
+        /* Spin, not sleep: the shortest rb_thread_wait_for actually sleeps is
+         * ~55us here (timer slack), 180x a transaction.  100ns per consecutive
+         * loss, 3.2us at most, runs no Ruby and checks no interrupts. */
+        {
+            struct timespec t0, t;
+            uint64_t budget = (uint64_t)recent_retries * 100;
 
-        TVAR_DEBUG_LOG("CM tv_usec:%lu", (unsigned long)tv.tv_usec);
-        rb_thread_wait_for(tv);
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            do {
+                clock_gettime(CLOCK_MONOTONIC, &t);
+            } while ((uint64_t)(t.tv_sec - t0.tv_sec) * 1000000000 + (t.tv_nsec - t0.tv_nsec) < budget);
+        }
     }
 
     // Record this retry after the check above, so a lone retry in a calm

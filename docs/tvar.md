@@ -94,7 +94,7 @@ transaction otherwise.
 
 **Reads outside a transaction cost nothing and scale.** Sixteen Ractors reading
 one shared TVar cost 9 ns per read, the same as sixteen reading their own, where
-the pessimistic [`Ractor::LockVar`](lockvar.md) costs 343 ns for the same thing
+the pessimistic [`Ractor::LockVar`](lockvar.md) costs 365 ns for the same thing
 because its read takes the lock. If your load is read heavy and the state is
 shared, this is the reason to be here.
 
@@ -105,18 +105,20 @@ several: two TVars that have to agree must be read inside one
 **Commits do not run in parallel.** Every committing transaction takes one
 process wide lock to allocate its version number, whichever variables it touched.
 Sixteen Ractors updating sixteen *unrelated* TVars get about 3.3× the throughput of
-one, where sixteen LockVars get 7.2×. On an update as small as `increment` there
+one, where sixteen LockVars get 7.0×. On an update as small as `increment` there
 is no gain left at all: sixteen Ractors on sixteen TVars get no more throughput
-than one does (75 ns against 75), because the commit is then
+than one does (both about 80 ns, inside the noise), because the commit is then
 all of the work. Transaction
 bodies do run in parallel; it is the commit that does not.
 
 **Fought over, retrying beats waiting.** Sixteen Ractors updating the *same*
-variable cost 451 ns per completed update against 1066 for a LockVar, because the
-loser of a race runs a short block again rather than parking a thread and waking
-it. A transaction that loses twice in a row also **backs off**, a microsecond per
-consecutive loss, before running again: that is what holds the contended cost
-flat as Ractors are added, and it is the one price a write contended only now
-and then pays. The full tables are in [the README](../README.md#performance).
+variable cost about 509 ns per completed update against 1102 for a LockVar,
+because the loser of a race runs a short block again rather than parking a
+thread and waking it. A transaction that loses twice in a row also **backs
+off**, spinning about 100 ns per consecutive loss before running again, which
+trims the work thrown away in a storm and costs an occasionally contended write
+nothing measurable. That contended figure is the volatile one, landing anywhere
+from 500 to 870 ns between sweeps. The full tables are in
+[the README](../README.md#performance).
 
 Part of [ractor-sharing](../README.md).
