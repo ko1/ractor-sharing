@@ -122,28 +122,37 @@ Four Ractors race to take the deploy lock; each block runs exactly once, so
 exactly one of them believes it won -- with a `TVar` the losing blocks would
 have run again, and a side effect in them with it.
 
-**Keys that change together: `LockHash`.** A row and the running total, a value
-and its index, entries that must agree with each other. Reads need no ceremony;
-writes go inside `synchronize`, and everything one section changes appears at
-once -- atomic across its own keys, and only that hash, with `to_h` a snapshot
-no write can tear.
+**Keys that change together: `LockHash`.** The everyday shape is a hash that
+holds an index into itself: a session store maps each token to its user *and*
+each user to their tokens, because "log out everywhere" needs the list. Login
+writes two keys; revocation deletes many. Each is one `synchronize`, because
+the gap is a security hole: revoked one by one, a racing request still
+authenticates with a not-yet-deleted token.
 
 ```ruby
-board = Ractor::LockHash.new(done: 0)
+sessions = Ractor::LockHash.new
 
-rs = 4.times.map do |i|
-  Ractor.new(board, i) do |b, id|
-    b.synchronize {|h| h["worker_#{id}"] = "passed"; h[:done] += 1 }
+logins = %w[ann ben].flat_map do |user|
+  2.times.map do |device|
+    Ractor.new(sessions, user, "sid-#{user}-#{device}") do |s, u, sid|
+      s.synchronize {|h| h[sid] = u; h[u] = (h[u] || []) + [sid] }
+    end
   end
 end
-rs.each(&:join)
+logins.each(&:join)
 
-board.to_h[:done] #=> 4
+sessions.synchronize do |h|                    # ann logs out everywhere
+  (h["ann"] || []).each {|sid| h.delete(sid) }
+  h.delete("ann")
+end
+
+sessions["sid-ann-0"] #=> nil
+sessions["sid-ben-1"] #=> "ben"
 ```
 
-Each section writes its own row **and** bumps the shared tally; because both
-happen under one `synchronize`, no snapshot ever counts a row twice or misses
-one.
+Reads need no ceremony; writes go inside `synchronize`, and everything one
+section changes appears at once -- atomic across its own keys, and only that
+hash, with `to_h` a snapshot no write can tear.
 
 **Independent keys, in parallel: `KeyLockHash`.** A registry, a cache, a
 scoreboard where each worker owns its row: hashes whose keys never change

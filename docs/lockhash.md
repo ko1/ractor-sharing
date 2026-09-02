@@ -7,23 +7,29 @@ allowed anywhere; every write goes through `synchronize`, and whatever one
 ```ruby
 require "ractor/lockhash"
 
-ledger = Ractor::LockHash.new(total: 0)
+sessions = Ractor::LockHash.new
 
-4.times.map do |i|
-  Ractor.new(ledger, i) do |b, id|
-    100.times do
-      b.synchronize {|x| x["worker_#{id}"] = (x["worker_#{id}"] || 0) + 1; x[:total] += 1 }
-    end
-  end
-end.each(&:join)
+# login: the token and the user's index move together
+sessions.synchronize do |h|
+  h["sid-1"] = "ann"
+  h["ann"] = (h["ann"] || []) + ["sid-1"]
+end
 
-ledger.to_h[:total] #=> 400
+# "log out everywhere": revoke every token AND the index, one section.
+# Revoked one by one, a racing request could still authenticate with a
+# not-yet-deleted token while the account believes it logged out.
+sessions.synchronize do |h|
+  (h["ann"] || []).each {|sid| h.delete(sid) }
+  h.delete("ann")
+end
+
+sessions.to_h #=> {}
 ```
 
-Every section moves a row **and** the total, so no reader and no `to_h`
-snapshot ever catches them apart. Keys that never change together do not need
-this lock, or its queue: they belong in
-[`Ractor::KeyLockHash`](keylockhash.md).
+That is the shape this class is for: a hash that holds an index into itself,
+where a write is two keys or ten and a reader must never see them halfway.
+Keys that never change together do not need this lock, or its queue: they
+belong in [`Ractor::KeyLockHash`](keylockhash.md).
 
 ## Why not a LockVar holding a Hash
 
