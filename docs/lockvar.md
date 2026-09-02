@@ -9,16 +9,16 @@ whole hash of them is [`Ractor::LockHash`](lockhash.md)'s.
 ```ruby
 require "ractor/lockvar"
 
-counter = Ractor::LockVar.new(0)
+roster = Ractor::LockVar.new([])
 
-rs = 4.times.map do
-  Ractor.new(counter) do |c|
-    1000.times { c.update {|n| n + 1 } }
+rs = %w[ann ben cho dee].map do |name|
+  Ractor.new(roster, name) do |r, me|
+    r.update {|team| team + [me] }   # read-modify-write, one at a time
   end
 end
 rs.each(&:join)
 
-p counter.value #=> 4000
+p roster.value.sort #=> ["ann", "ben", "cho", "dee"]
 ```
 
 ## API

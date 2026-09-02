@@ -9,9 +9,9 @@ that several Ractors both read and change. Each class here is such a place.
 What each one is, in a line:
 
 * **[`Ractor::TVar`](docs/tvar.md)** is a *transactional* variable. Read and
-  write any number of them inside one `Ractor.atomically` block, and everything
-  that block changed takes effect together or not at all. A block that loses a
-  race is rolled back and run again.
+  write as many of them as you like inside one `Ractor.atomically` block, and
+  everything that block changed takes effect together or not at all. A block
+  that loses a race is rolled back and run again.
 * **[`Ractor::LockVar`](docs/lockvar.md)** is a variable behind a *lock*. An
   update waits for its turn, and then its block runs exactly once.
 * **[`Ractor::LockHash`](docs/lockhash.md)** is a hash behind one lock. A
@@ -95,9 +95,9 @@ waiting for a turn beats retrying. One shareable value, and the
 block runs once by construction.
 
 ```ruby
-counter = Ractor::LockVar.new(0)
-4.times.map { Ractor.new(counter) {|c| 1000.times { c.increment } } }.each(&:join)
-counter.value #=> 4000
+release = Ractor::LockVar.new({ version: "v1", by: nil })
+release.update {|r| { version: "v2", by: :deploy_bot } }  # announce here: it runs once
+release.value #=> {version: "v2", by: :deploy_bot}
 ```
 
 **The same, for a hash: `LockHash`.** A registry, a cache, a scoreboard each
@@ -107,8 +107,8 @@ appears at once. Atomic across its own keys, and only those.
 
 ```ruby
 board = Ractor::LockHash.new
-board.synchronize {|b| b[:worker_1] = 42 }
-board.to_h #=> {worker_1: 42}
+board.synchronize {|b| b[:worker_1] = "tests passed"; b[:green] = true }
+board.to_h #=> {worker_1: "tests passed", green: true}
 ```
 
 **Independent keys, in parallel: `KeyLockHash`.** When no two keys ever need to
