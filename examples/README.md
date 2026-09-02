@@ -30,6 +30,7 @@ Two of them are small applications rather than single tricks:
 | [14_api_gateway.rb](14_api_gateway.rb) | `LockHash` + `LockVar` + `ActiveObject` | an API gateway: token buckets, idempotency keys, a circuit breaker that announces each transition exactly once |
 | [15_cache_backend.rb](15_cache_backend.rb) | `KeyLockHash` | a cache backend: get-or-create per key, dog-piles absorbed by the key lock itself |
 | [16_session_store.rb](16_session_store.rb) | `LockHash` | a session store with "log out everywhere": token and index move together, or a revoked token still authenticates |
+| [17_pubsub.rb](17_pubsub.rb) | `KeyLockHash` + `Ractor::Port` | pub/sub in thirty lines: the book is state, delivery is ports, and that is why the gem ships no broker |
 
 The [test suite](../test/examples_test.rb) runs every one of them, so they
 cannot rot.

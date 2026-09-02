@@ -405,6 +405,10 @@ there is no queue here that several Ractors take work from, no barrier, no
 semaphore: those would be a second place to wait, and a rendezvous dressed up as
 a data structure.
 
+When one of those shapes is what you want, it is usually the family and the
+Port composing: [examples/17_pubsub.rb](examples/17_pubsub.rb) is pub/sub in
+thirty lines, the subscription book as state and the delivery as ports.
+
 The one wait they make you do is for a lock, and even that is a `receive`: a
 thread that cannot take a lock parks on a `Ractor::Port` of its own until the
 holder sends it a wakeup. (Inside the extensions there are native mutexes, held
