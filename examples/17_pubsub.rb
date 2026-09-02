@@ -9,6 +9,10 @@
 # A Ractor::Port is shareable, so it can sit in the book directly; a
 # subscriber that died closed its port, and the next publish prunes it.
 #
+# Publishers run in parallel and pay their own delivery; the only order is
+# each publisher's own. When every subscriber must see the SAME order, that
+# is what an owner buys: see 18_pubsub_ordered.rb.
+#
 #   ruby -Ilib examples/17_pubsub.rb
 Warning[:experimental] = false
 require "ractor/sharing"

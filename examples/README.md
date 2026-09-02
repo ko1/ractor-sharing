@@ -31,6 +31,7 @@ Two of them are small applications rather than single tricks:
 | [15_cache_backend.rb](15_cache_backend.rb) | `KeyLockHash` | a cache backend: get-or-create per key, dog-piles absorbed by the key lock itself |
 | [16_session_store.rb](16_session_store.rb) | `LockHash` | a session store with "log out everywhere": token and index move together, or a revoked token still authenticates |
 | [17_pubsub.rb](17_pubsub.rb) | `KeyLockHash` + `Ractor::Port` | pub/sub in thirty lines: the book is state, delivery is ports, and that is why the gem ships no broker |
+| [18_pubsub_ordered.rb](18_pubsub_ordered.rb) | `ActiveObject` | the other pub/sub: one owner serializes every publish, and buys every subscriber the identical order |
 
 The [test suite](../test/examples_test.rb) runs every one of them, so they
 cannot rot.
