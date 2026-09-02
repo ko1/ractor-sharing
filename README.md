@@ -189,8 +189,11 @@ cache = Ractor::KeyLockHash.new
 readers = 4.times.map do
   Ractor.new(cache) do |c|
     renders = 0
+    render = ->(page) { renders += 1; "<p>page #{page}</p>" }   # the expensive part
+
     100.times do |i|
-      c.update("page-#{i % 10}") {|html| html || (renders += 1; "<p>page #{i % 10}</p>") }
+      page = i % 10
+      c.update("page-#{page}") {|html| html || render.(page) }
     end
     renders
   end
