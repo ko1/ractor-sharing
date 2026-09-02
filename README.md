@@ -167,24 +167,29 @@ hash, with `to_h` a snapshot no write can tear.
 scoreboard where each worker owns its row: hashes whose keys never change
 together. There the whole-hash lock above is paying for atomicity nobody asked
 for, with unrelated clients waiting in one queue. `KeyLockHash` locks per key,
-so they do not, and `update` makes the check-and-claim shapes one line:
+and the everyday shape is a cache:
 
 ```ruby
-jobs = Ractor::KeyLockHash.new
+cache = Ractor::KeyLockHash.new
 
-winners = 4.times.map do
-  Ractor.new(jobs) do |m|
-    won = false
-    m.update("job-7") {|v| v || (won = true; :claimed) }  # put-if-absent, per key
-    won
+readers = 4.times.map do
+  Ractor.new(cache) do |c|
+    renders = 0
+    100.times do |i|
+      c.update("page-#{i % 10}") {|html| html || (renders += 1; "<p>page #{i % 10}</p>") }
+    end
+    renders
   end
 end
 
-winners.map(&:value).count(true) #=> 1
+readers.sum(&:value) #=> 10
 ```
 
-Four Ractors race for one job id and exactly one claims it, while claims on
-other ids would not have waited for this one at all.
+Four hundred fetches over ten pages, and the render ran exactly ten times:
+`update` holds that key's lock while the block runs, so simultaneous misses on
+one page render once and everyone else reads the result -- the cache stampede,
+absorbed by the shape itself -- while misses on different pages never meet.
+Check-and-claim is the same line with `:claimed` in it.
 
 
 **A mutable object: `ActiveObject`.** When freezing the state is not on the
