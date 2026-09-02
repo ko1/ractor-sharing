@@ -113,10 +113,15 @@ other user of *that key* waits for it. Compute the new value and nothing more.
 
 The one deliberate exception is get-or-create caching, where holding the lock
 through the computation is the point -- it is what stops eight simultaneous
-misses computing eight times. That trades a blocked key for an absorbed
-stampede; make the trade knowingly, and see
-[examples/15_cache_backend.rb](../examples/15_cache_backend.rb) for it priced
-and tested.
+misses computing eight times. The arithmetic is what justifies it: everyone
+waiting would have run the *identical* computation themselves, so each waits
+at most what it would have burned, and the system does the work once instead
+of eight times. That argument covers exactly this case and no other -- it is
+not licence for unrelated slow work under the lock -- and it assumes the
+computation reliably finishes: one render stuck on the network wedges its key,
+and, keys being striped over 64 shards, the occasional innocent neighbour.
+See [examples/15_cache_backend.rb](../examples/15_cache_backend.rb) for the
+trade priced and tested.
 
 ## When something else fits better
 
