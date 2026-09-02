@@ -293,6 +293,32 @@ klh_collect_body(VALUE ptr)
 
 /* --- methods -------------------------------------------------------------- */
 
+/* A read whose key is an immediate: st_lookup's compare is then rb_eql on two
+ * immediates, pure C that runs no Ruby and cannot raise.  So no interrupt can
+ * land between acquire and release and there is nothing to unwind -- take the
+ * lock, look up, put it back, no held marker and no ensure.  This is what
+ * LockVar#value does, applied per shard.  Returns Qundef if the key is not an
+ * immediate, so the caller falls back to the guarded path (a String key's
+ * #eql? is Ruby and could raise). */
+static VALUE
+klh_fast_lookup(VALUE self, VALUE key)
+{
+    struct klh_shard *shard;
+    st_data_t found;
+    VALUE result;
+
+    if (!SPECIAL_CONST_P(key)) return Qundef;
+
+    /* Nesting is still refused: inside any update, a read raises. */
+    if (RB_UNLIKELY(!NIL_P(rs_held(rb_thread_current())))) return Qundef;
+
+    shard = klh_shard_for(self, key);
+    rs_lock_acquire(&shard->lock);
+    result = st_lookup(shard->tbl, (st_data_t)key, &found) ? (VALUE)found : Qundef;
+    rs_lock_release(&shard->lock);
+    return result;
+}
+
 /*
  *  call-seq:
  *     keylockhash[key] -> value or nil
@@ -302,9 +328,14 @@ klh_collect_body(VALUE ptr)
 static VALUE
 klh_aref(VALUE self, VALUE key)
 {
-    struct klh_op op = { klh_shard_for(self, key), key, Qnil };
-    VALUE found = KLH_GUARDED(self, &op, klh_lookup_body);
-    return RB_UNDEF_P(found) ? Qnil : found;
+    VALUE found = klh_fast_lookup(self, key);
+    if (!RB_UNDEF_P(found)) return found;
+    if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) return Qnil;
+    {
+        struct klh_op op = { klh_shard_for(self, key), key, Qnil };
+        VALUE f = KLH_GUARDED(self, &op, klh_lookup_body);
+        return RB_UNDEF_P(f) ? Qnil : f;
+    }
 }
 
 /*
@@ -325,10 +356,14 @@ klh_fetch(int argc, VALUE *argv, VALUE self)
     key = argv[0];
     def = argc > 1 ? argv[1] : Qundef;
 
-    op.shard = klh_shard_for(self, key);
-    op.key = key;
-    op.value = Qnil;
-    found = KLH_GUARDED(self, &op, klh_lookup_body);
+    found = klh_fast_lookup(self, key);
+    if (RB_UNDEF_P(found)) {
+        op.shard = klh_shard_for(self, key);
+        op.key = key;
+        op.value = Qnil;
+        found = SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))
+              ? Qundef : KLH_GUARDED(self, &op, klh_lookup_body);
+    }
     if (!RB_UNDEF_P(found)) return found;
     if (rb_block_given_p()) return rb_yield(key);
     if (!RB_UNDEF_P(def)) return def;
@@ -338,7 +373,11 @@ klh_fetch(int argc, VALUE *argv, VALUE self)
 static VALUE
 klh_key_p(VALUE self, VALUE key)
 {
-    struct klh_op op = { klh_shard_for(self, key), key, Qnil };
+    struct klh_op op;
+    if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) {
+        return RB_UNDEF_P(klh_fast_lookup(self, key)) ? Qfalse : Qtrue;
+    }
+    op = (struct klh_op){ klh_shard_for(self, key), key, Qnil };
     return RB_UNDEF_P(KLH_GUARDED(self, &op, klh_lookup_body)) ? Qfalse : Qtrue;
 }
 
