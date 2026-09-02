@@ -80,6 +80,26 @@ A key's own `#hash` or `#eql?` that reaches back into the same map raises
 `NestedLockError` rather than deadlocking or being let in: the inner call may
 want a shard this thread does not hold.
 
+## Performance
+
+The number this class exists for, one **shared** map with a key per Ractor,
+updates only (median of three, ns per completed update across all Ractors):
+
+| Ractors | `KeyLockHash#update`, own key (ns) | `LockHash`, own key (ns) |
+|---:|---:|---:|
+| 1 | 451 | 476 |
+| 4 | **123** | 1212 |
+| 16 | **248** | 1312 |
+
+The table lock pays for every neighbour; the key lock does not. (Sixteen keys
+on 64 shards collide now and then, which is why 16 sits above 4.)
+
+Everywhere else it costs what `LockHash` costs: an uncontended update is
+372 ns, a read 137 ns, and sixteen Ractors fighting over one *single* key are
+one lock's queue again, 1173 ns per update. Measured on 16 cores, governor
+`performance`, ruby 4.1.0dev; `benchmark/family.rb` and its `ownkey`
+companion in the trials record produce these.
+
 ## When something else fits better
 
 * Two keys that change together, or a consistent snapshot:

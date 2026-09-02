@@ -34,7 +34,7 @@ off it only for a reason the others below name.
 | [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 68 ns | 351 ns |
 | [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 74 ns | 352 ns |
 | [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | the same, but the keys are not known in advance | 132 ns | 433 ns |
-| [`Ractor::KeyLockHash`](docs/keylockhash.md)<br>`m.update(k) {\|v\| v + 1 }` | the keys are independent: buckets, caches, idempotency claims. Parallel across keys | — | — |
+| [`Ractor::KeyLockHash`](docs/keylockhash.md)<br>`m.update(k) {\|v\| v + 1 }` | the keys are independent: buckets, caches, idempotency claims. Parallel across keys | 137 ns | 372 ns |
 | [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.3 µs | 2.8 µs |
 | [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.2 µs | 3.2 µs |
 
@@ -164,6 +164,7 @@ operation, counted across all Ractors, on 16 cores.
 | `TVar#value` | 68 | **9** | 9 |
 | `LockVar#value` | 74 | 365 | 10 |
 | `LockHash#[]` | 132 | 489 | 23 |
+| `KeyLockHash#[]` | 137 | 478 | 18 |
 | `ActiveObject` sync method | 2300 | 1380 | 742 |
 | `ActorHash#[]` | 2179 | 1451 | 730 |
 | no sharing at all | 78 | n/a | 9 |
@@ -182,6 +183,7 @@ machine's limit.
 | `TVar` transaction | 351 | **509** | 108 |
 | `LockVar#update` | 352 | 1102 | **50** |
 | `LockHash#synchronize` | 433 | 1238 | 58 |
+| `KeyLockHash#update` | 372 | 1173 | 52 |
 | `ActiveObject` async method | 1555 | 839 | 179 |
 | `ActiveObject` sync method | 2789 | 1587 | 760 |
 | `ActorHash#async_call` | 1919 | 1032 | 219 |
@@ -201,6 +203,12 @@ worth 3× to 4× when the objects are spread out** on the two classes that keep 
 Ractor (16 on their own, sync against async above); on one shared object the
 serialisation at the owner leaves it under 2×, and from a single caller it is
 about 1.7×.
+
+Neither of these two conditions shows what `KeyLockHash` is for: on one shared
+key it is the same lock as everyone else, and separate maps share nothing. Its
+condition is **one shared map with a key per Ractor**, where the table lock
+pays for every neighbour and the key lock does not: 123 ns against `LockHash`'s
+1212 at four Ractors, 248 against 1312 at sixteen.
 
 The `no sharing at all` row is the machine's own ceiling: about 8× is as far as
 anything here scales. Called from the main Ractor rather than a worker, the two
