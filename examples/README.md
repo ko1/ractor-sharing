@@ -28,6 +28,7 @@ Two of them are small applications rather than single tricks:
 | [12_kvstore_wal.rb](12_kvstore_wal.rb) | `ActiveObject` | a crash-safe KV store: write-ahead log on disk, crash, replay, identical state |
 | [13_buffered_logger.rb](13_buffered_logger.rb) | `ActiveObject` | a batching file logger: buffer, high-water mark and flush clock are just ivars |
 | [14_api_gateway.rb](14_api_gateway.rb) | `LockHash` + `LockVar` + `ActiveObject` | an API gateway: token buckets, idempotency keys, a circuit breaker that announces each transition exactly once |
+| [15_cache_backend.rb](15_cache_backend.rb) | `KeyLockHash` | a cache backend: get-or-create per key, dog-piles absorbed by the key lock itself |
 
 The [test suite](../test/examples_test.rb) runs every one of them, so they
 cannot rot.

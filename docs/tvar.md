@@ -11,20 +11,20 @@ A TVar holds any shareable object, not only a number:
 ```ruby
 require "ractor/tvar"
 
-config  = Ractor::TVar.new({ mode: :idle }.freeze)
-version = Ractor::TVar.new("v1".freeze)
+config  = Ractor::TVar.new(mode: :idle)
+version = Ractor::TVar.new("v1")
 
 Ractor.atomically do
-  config.value  = config.value.merge(mode: :running).freeze
-  version.value = "v2".freeze             # nobody sees v1 running, or v2 idle
+  config.value  = config.value.merge(mode: :running)
+  version.value = "v2"                    # nobody sees v1 running, or v2 idle
 end
 ```
 
 One variable is a transaction with one variable in it, and reads the same way:
 
 ```ruby
-seen = Ractor::TVar.new([].freeze)
-Ractor.atomically { seen.value = (seen.value + [:x]).freeze }
+seen = Ractor::TVar.new([])
+Ractor.atomically { seen.value = seen.value + [:x] }
 ```
 
 Where two variables have to agree, that is the whole point:
@@ -55,7 +55,7 @@ tv.value #=> 40000
 ## API
 
 ```ruby
-tv = Ractor::TVar.new(initial = nil)   # any shareable object
+tv = Ractor::TVar.new(initial = nil)   # anything; made shareable on the way in
 
 Ractor.atomically { ... }   # everything inside is one transaction
 
@@ -64,7 +64,12 @@ tv.value = v         # write; only inside a transaction
 tv.increment(n = 1)  # add in one step; inside or out, for values that answer to +
 ```
 
-Values must be shareable; `ArgumentError` otherwise.
+Values are **made shareable on the way in**: one that already is passes
+through untouched, anything else is deep-frozen **in place** -- storing a value
+here means sharing it, so no `.freeze` ceremony is needed, and the object you
+handed over comes out frozen. Hand over things you are done mutating: storing
+`STDOUT` would freeze `STDOUT`. A value that cannot be made shareable raises
+`Ractor::IsolationError`.
 
 **A write needs a transaction.** `tv.value = v` on its own raises
 `Ractor::TransactionError`, "can not set without transaction". There is no

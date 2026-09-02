@@ -1,6 +1,7 @@
 # Ractor::LockVar
 
-**One** variable that Ractors can share. It holds one shareable object; any
+**One** variable that Ractors can share. It holds one shareable object (made
+shareable on the way in); any
 Ractor can read it, and any Ractor can replace what is in it, one at a time.
 Several variables that have to change together are `Ractor::TVar`'s job, and a
 whole hash of them is [`Ractor::LockHash`](lockhash.md)'s.
@@ -39,22 +40,23 @@ A variable, not a lock: there is no lock, unlock, or owner query. `value` and
 `update` are the whole of it, and `increment` is there because a counter is what
 a shared variable most often is.
 
-### The value must be shareable
+### The value is made shareable
 
-A LockVar holds one **shareable** object, and so does everything you store into
-it. Anything else raises `ArgumentError`:
+A LockVar holds one **shareable** object, and the store sees to it: a value
+that already is shareable passes through untouched, anything else is
+deep-frozen **in place**. No `.freeze` ceremony, and the object you handed
+over comes out frozen -- hand over things you are done mutating (storing
+`STDOUT` would freeze `STDOUT`). A value that cannot be made shareable raises
+`Ractor::IsolationError`.
 
 ```ruby
-Ractor::LockVar.new({})            # => ArgumentError: only shareable object are allowed
-lv.update { [1, 2] }               # => ArgumentError
-lv.update { [1, 2].freeze }        # fine
-lv.update { {a: 1}.freeze }        # fine
+lv = Ractor::LockVar.new({})       # fine; the hash is frozen in place
+lv.update { [1, 2] }               # fine; frozen on the way in
 ```
 
-That is what makes a LockVar safe to hand to any Ractor: it is frozen and
-shareable itself, and the value inside it is too, so nothing reachable through it
-can be mutated behind the lock's back. It also means an update replaces the value
-rather than modifying it: `lv.update { it.merge(k => v).freeze }`, not
+Shareable means nothing reachable through the LockVar can be mutated behind
+the lock's back. It also means an update replaces the value rather than
+modifying it: `lv.update { it.merge(k => v) }`, not
 `lv.value[k] = v`.
 
 A rejected value leaves the variable as it was.
@@ -79,7 +81,7 @@ return it clears the variable: `lv.update {|v| puts v }` stores `nil`.
 
 `increment` is there because adding to a number is the most common update of all;
 it is the block form with the block written for you, and behaves the same way in
-every respect, including refusing to store a sum that is not shareable.
+every respect, including making the sum shareable on the way in.
 
 ## Read-modify-write belongs inside the block
 
@@ -95,7 +97,7 @@ v = lv.value
 lv.update { v + 1 }
 
 h = lv.value
-lv.update { h.merge(key => 1).freeze }
+lv.update { h.merge(key => 1) }
 ```
 
 ```ruby
@@ -103,8 +105,8 @@ lv.update { h.merge(key => 1).freeze }
 lv = Ractor::LockVar.new(0)
 lv.update { it + 1 }
 
-h = Ractor::LockVar.new({}.freeze)
-h.update { it.merge(key: 1).freeze }
+h = Ractor::LockVar.new({})
+h.update { it.merge(key: 1) }
 ```
 
 Four Ractors incrementing 500 times each:
@@ -218,7 +220,7 @@ final store. If your load is read heavy and shared, that guarantee is expensive.
 ### Updating
 
 ```ruby
-v.update {|rec| { status: rec[:status], seq: rec[:seq] + 1 }.freeze }
+v.update {|rec| { status: rec[:status], seq: rec[:seq] + 1 } }
 ```
 
 | Ractors | shared `LockVar#update` (ns) | shared `TVar` `atomically` (ns) | own `LockVar#update` (ns) | own `TVar` `atomically` (ns) |

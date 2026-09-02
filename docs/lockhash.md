@@ -24,8 +24,8 @@ You can put a frozen Hash in a [`Ractor::LockVar`](lockvar.md), but then changin
 one entry copies the whole thing:
 
 ```ruby
-lv = Ractor::LockVar.new({}.freeze)
-lv.update { it.merge(k: 1).freeze }   # O(n) per write
+lv = Ractor::LockVar.new({})
+lv.update { it.merge(k: 1) }   # O(n) per write
 ```
 
 `LockHash` keeps a real Hash and writes into it, so one entry costs one entry.
@@ -54,9 +54,11 @@ released is already stale, and inside a section `keys` says the same thing.
 that block **after** the lookup has released the lock, so a default that reads
 this hash again is fine.
 
-Keys and values must be **shareable**; `ArgumentError` otherwise, with one
-courtesy borrowed from `Hash` itself: a bare String key is stored as a frozen
-copy, and yours stays yours. The LockHash
+Values are **made shareable on the way in** (deep-frozen in place; a value
+that cannot be raises `Ractor::IsolationError`). Keys must be shareable
+already, `ArgumentError` otherwise, with one courtesy borrowed from `Hash`
+itself: a bare String key is stored as a frozen copy, and yours stays yours.
+The LockHash
 itself is frozen and shareable, so it can be passed to any Ractor. `keys` and
 `to_h` return plain mutable copies, yours to reshape; everything inside them is
 shareable already, so `Ractor.make_shareable(h.to_h)` is all it takes to hand

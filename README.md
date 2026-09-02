@@ -44,12 +44,13 @@ process ends; their write is the figure for a `sync` call, and drops to 1.6 µs
 and 1.9 µs when sent without waiting for the reply (`async def`, `async_call`).
 Contended, the order changes: see [Performance](#performance).
 
-The first three hold **shareable** values, so a change replaces a value rather
-than modifying it: `lv.update { it.merge(k => v).freeze }`. When your state is a
-mutable object you have no intention of freezing, such as a Hash you keep writing
-into or an object graph with methods over it, it cannot go in any of them. The last two
-are for exactly that: the object stays mutable and unshareable, in a Ractor of
-its own, and you send it the calls instead of the data.
+The first four hold **shareable** values -- made shareable for you on the way
+in, so no `.freeze` ceremony -- and a change replaces a value rather than
+modifying it: `lv.update { it.merge(k => v) }`. When your state is a mutable
+object you intend to keep mutating, such as a Hash you keep writing into or an
+object graph with methods over it, storing it there would freeze it. The last
+two are for exactly that: the object stays mutable and unshareable, in a Ractor
+of its own, and you send it the calls instead of the data.
 
 ```ruby
 require "ractor/sharing"        # all of them

@@ -53,10 +53,11 @@ m.update(key) {|v| new_v }  # read-modify-write under one hold; v is nil if abse
 m.delete(key)               # returns the old value, or nil
 ```
 
-Keys and values must be **shareable**; `ArgumentError` otherwise, with one
-courtesy borrowed from `Hash` itself: a bare String key is stored as a frozen
-copy, and yours stays yours. The map itself is frozen and shareable, so it can
-be passed to any Ractor.
+Values are **made shareable on the way in** (deep-frozen in place; a value
+that cannot be raises `Ractor::IsolationError`). Keys must be shareable
+already, `ArgumentError` otherwise, with one courtesy borrowed from `Hash`
+itself: a bare String key is stored as a frozen copy, and yours stays yours.
+The map itself is frozen and shareable, so it can be passed to any Ractor.
 
 ## One key at a time
 
@@ -109,5 +110,8 @@ companion in the trials record produce these.
 * One key so read-hot that even its own lock is a queue: put that value in a
   [`Ractor::TVar`](tvar.md), whose reads take nothing.
 * Values you will not freeze: [`Ractor::ActorHash`](actor_hash.md).
+
+A worked cache backend, dog-pile protection included, is
+[examples/15_cache_backend.rb](../examples/15_cache_backend.rb).
 
 Part of [ractor-sharing](../README.md).
