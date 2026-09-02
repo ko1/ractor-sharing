@@ -71,19 +71,28 @@ deadlock, and under genuine contention it is the quickest thing
 here, because losing a race and retrying beats parking a thread.
 
 ```ruby
-from, to = Ractor::TVar.new(100), Ractor::TVar.new(0)
+mode   = Ractor::TVar.new(:maintenance)
+notice = Ractor::TVar.new("closed for maintenance")
 
-movers = 4.times.map do
-  Ractor.new(from, to) do |a, b|
-    25.times { Ractor.atomically { a.value -= 1; b.value += 1 } }
+watchers = 4.times.map do
+  Ractor.new(mode, notice) do |m, n|
+    mixed = 0
+    10_000.times do
+      state, text = Ractor.atomically { [m.value, n.value] }   # one snapshot
+      mixed += 1 if (state == :open) != (text == "welcome!")
+    end
+    mixed
   end
 end
-movers.each(&:join)
 
-[from.value, to.value] #=> [0, 100]
+Ractor.atomically { mode.value = :open; notice.value = "welcome!" }
+
+watchers.sum(&:value) #=> 0
 ```
 
-A hundred races, and nobody ever saw the money in neither account.
+Forty thousand snapshots taken across the flip, and not one of them caught the
+mode and the notice disagreeing. Note the read side: seeing several TVars
+consistently is also one `atomically`.
 
 The one thing to hold on to: a transaction that loses a race is **rolled back and
 run again**, so its block has to be safe to run twice. Keep it to reading and
