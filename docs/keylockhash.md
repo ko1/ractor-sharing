@@ -104,7 +104,9 @@ on 64 shards collide now and then, which is why 16 sits above 4.)
 
 Everywhere else it costs what `LockHash` costs: an uncontended update is
 372 ns, a read 137 ns, and sixteen Ractors fighting over one *single* key are
-one lock's queue again, 1173 ns per update. Measured on 16 cores, governor
+one lock's queue again, 1173 ns per update. `increment` is 144 ns uncontended
+and 16 ns per op with a key per Ractor at sixteen -- same shape, block written
+for you. Measured on 16 cores, governor
 `performance`, ruby 4.1.0dev; `benchmark/family.rb` and its `ownkey`
 companion in the trials record produce these.
 

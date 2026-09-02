@@ -373,8 +373,13 @@ that path rather than the class. It gets a table of its own:
 
 | | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
 |---|---:|---:|---:|
-| `LockVar#increment` | 77 | 338 | **8** |
-| `TVar#increment` | 89 | **144** | 75 |
+| `LockVar#increment` | 80 | 348 | **9** |
+| `TVar#increment` | 76 | **159** | 75 |
+| `KeyLockHash#increment` | 144 | 518 | 16 |
+
+One hot counter belongs in a `LockVar` (or a `TVar`, contended); counters that
+spread over keys belong in the `KeyLockHash`, which pays the hash and the guard
+per call and scales across its keys like everything else it does.
 
 `benchmark/family.rb` produces all of these, sweeping 1, 2, 4, 8 and 16 Ractors
 over read, write and a 9:1 mix, under both conditions. Every worker reports ready

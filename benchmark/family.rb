@@ -132,6 +132,9 @@ FAST_PATH = [
     write: Ractor.shareable_proc { |o| o.increment }, seq: IVAL },
   { label: "TVar#increment", make: -> { Ractor::TVar.new(0) },
     write: Ractor.shareable_proc { |o| o.increment }, seq: IVAL },
+  { label: "KeyLockHash#increment", make: -> { Ractor::KeyLockHash.new },
+    write: Ractor.shareable_proc { |o| o.increment(:n) },
+    seq: Ractor.shareable_proc { |o| o[:n] } },
 ]
 
 MODES = %i[read write mix].freeze
