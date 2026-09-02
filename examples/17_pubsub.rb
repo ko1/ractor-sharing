@@ -44,6 +44,12 @@ class PubSub
 
   def subscribers(topic) = (@topics[topic] || []).size
 
+  # The stored array itself: frozen on the way in, so it crosses anywhere and
+  # nobody can bend it -- a true snapshot, stale the moment after. Think before
+  # making this public, though: a port is the capability to send to that
+  # subscriber, and a listing hands every caller a way around #publish.
+  def ports(topic) = @topics[topic] || []
+
   # The channel list is the key list: a copy, consistent per key. A topic whose
   # last subscriber died lingers as topic => [] -- removing the key the moment
   # it empties would take two acquisitions (see the emptiness, then delete),
@@ -71,6 +77,9 @@ rest = 2.times.map { |n| BUS.publish("deploys", "v#{n + 2} is live") }
 heard = listeners[0..1].map(&:value)
 abort "a live subscriber missed a message: #{heard}" unless heard.all? { |h| h == ["v1 is live", "v2 is live", "v3 is live"] }
 abort "the dead subscriber was not pruned" unless BUS.subscribers("deploys") == 2
+deploy_ports = BUS.ports("deploys")
+abort "port list wrong" unless deploy_ports.size == 2 && deploy_ports.frozen? &&
+                               deploy_ports.all?(Ractor::Port)
 BUS.subscribe("alerts", Ractor::Port.new)
 abort "channel list wrong: #{BUS.channels}" unless BUS.channels.sort == %w[alerts deploys]
 puts "ok: 3 published, #{[first, *rest].join('+')} delivered; the one that left was " \
