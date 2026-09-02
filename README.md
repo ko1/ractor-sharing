@@ -33,8 +33,8 @@ abstraction only when one of the reasons below applies.
 |---|---|---:|---:|
 | [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 68 ns | 351 ns |
 | [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 74 ns | 352 ns |
-| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | the same, but the keys are not known in advance | 132 ns | 433 ns |
-| [`Ractor::KeyLockHash`](docs/keylockhash.md)<br>`m.update(k) {\|v\| v + 1 }` | the keys are independent: buckets, caches, idempotency claims. Parallel across keys | 137 ns | 372 ns |
+| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | two or more keys must change together, or a snapshot must be consistent | 132 ns | 433 ns |
+| [`Ractor::KeyLockHash`](docs/keylockhash.md)<br>`m.update(k) {\|v\| v + 1 }` | the keys are independent: registries, caches, buckets, idempotency claims. Parallel across keys | 137 ns | 372 ns |
 | [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.3 µs | 2.8 µs |
 | [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.2 µs | 3.2 µs |
 
@@ -122,10 +122,11 @@ Four Ractors race to take the deploy lock; each block runs exactly once, so
 exactly one of them believes it won -- with a `TVar` the losing blocks would
 have run again, and a side effect in them with it.
 
-**The same, for a hash: `LockHash`.** A registry, a cache, a scoreboard each
-worker writes a row of, where the keys are not known in advance. Reads need no
-ceremony; writes go inside `synchronize`, and everything one section changes
-appears at once. Atomic across its own keys, and only that hash.
+**Keys that change together: `LockHash`.** A row and the running total, a value
+and its index, entries that must agree with each other. Reads need no ceremony;
+writes go inside `synchronize`, and everything one section changes appears at
+once -- atomic across its own keys, and only that hash, with `to_h` a snapshot
+no write can tear.
 
 ```ruby
 board = Ractor::LockHash.new(done: 0)
@@ -144,10 +145,11 @@ Each section writes its own row **and** bumps the shared tally; because both
 happen under one `synchronize`, no snapshot ever counts a row twice or misses
 one.
 
-**Independent keys, in parallel: `KeyLockHash`.** When no two keys ever need to
-change together, the whole-hash lock above is paying for atomicity nobody asked
-for: unrelated clients wait in one queue. `KeyLockHash` locks per key, so they
-do not, and `update` makes the check-and-claim shapes one line:
+**Independent keys, in parallel: `KeyLockHash`.** A registry, a cache, a
+scoreboard where each worker owns its row: hashes whose keys never change
+together. There the whole-hash lock above is paying for atomicity nobody asked
+for, with unrelated clients waiting in one queue. `KeyLockHash` locks per key,
+so they do not, and `update` makes the check-and-claim shapes one line:
 
 ```ruby
 jobs = Ractor::KeyLockHash.new

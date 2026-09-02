@@ -1,22 +1,29 @@
 # Ractor::LockHash
 
-A Hash that Ractors can share. Reads are allowed anywhere; every write goes
-through `synchronize`, and whatever one `synchronize` changes, other Ractors see
-all of it or none of it.
+A Hash that Ractors can share, for **keys that change together**. Reads are
+allowed anywhere; every write goes through `synchronize`, and whatever one
+`synchronize` changes, other Ractors see all of it or none of it.
 
 ```ruby
 require "ractor/lockhash"
 
-board = Ractor::LockHash.new
+ledger = Ractor::LockHash.new(total: 0)
 
 4.times.map do |i|
-  Ractor.new(board, i) do |b, id|
-    100.times {|n| b.synchronize {|x| x[id] = n } }
+  Ractor.new(ledger, i) do |b, id|
+    100.times do
+      b.synchronize {|x| x["worker_#{id}"] = (x["worker_#{id}"] || 0) + 1; x[:total] += 1 }
+    end
   end
 end.each(&:join)
 
-board.to_h.sort.to_h #=> {0 => 99, 1 => 99, 2 => 99, 3 => 99}   # whoever wrote first is first
+ledger.to_h[:total] #=> 400
 ```
+
+Every section moves a row **and** the total, so no reader and no `to_h`
+snapshot ever catches them apart. Keys that never change together do not need
+this lock, or its queue: they belong in
+[`Ractor::KeyLockHash`](keylockhash.md).
 
 ## Why not a LockVar holding a Hash
 
