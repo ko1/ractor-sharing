@@ -59,6 +59,11 @@ the round trip is most of the cost: sixteen Ractors with an object each get
 through `async` calls at **0.18 µs**, against 0.76 µs for the same method declared
 `sync`. Reads have to be `sync`, because the answer is the point.
 
+A `sync` method's return value crosses back by the ordinary rules, so an
+unshareable return is **copied whole**: return the internal Array you just
+appended to and every call ships a copy of the entire, growing collection.
+Return a scalar, a frozen slice, or nil.
+
 None of that applies to calls made *inside* the owner: those are plain Ruby
 calls. And if the state you are guarding fits in a shareable value,
 [`Ractor::LockVar`](lockvar.md) or [`Ractor::TVar`](tvar.md) will be much

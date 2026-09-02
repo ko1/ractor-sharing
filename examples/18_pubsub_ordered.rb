@@ -14,7 +14,12 @@ require "ractor/sharing"
 class OrderedPubSub < Ractor::ActiveObject
   def initialize = @topics = {}          # a plain mutable Hash: it never leaves
 
-  sync def subscribe(topic, port) = (@topics[topic] ||= []) << port
+  # Returns nil on purpose: a sync reply crosses back to the caller, and an
+  # unshareable return is copied whole -- return the book here and every
+  # subscribe ships a copy of the entire, growing subscriber list. Measured,
+  # that one mistake made the ten-thousandth subscribe five times the cost of
+  # the call itself, and rising with every subscriber after.
+  sync def subscribe(topic, port) = ((@topics[topic] ||= []) << port; nil)
 
   async def publish(topic, message)      # fire and forget; the owner serializes
     (@topics[topic] || []).each { |port| port << message }

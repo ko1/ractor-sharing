@@ -23,6 +23,12 @@ class PubSub
     Ractor.make_shareable(self)
   end
 
+  # The book is copy-on-write: each subscribe rebuilds the topic's array, so
+  # it costs O(subscribers) -- measured, the ten-thousandth subscribe is not
+  # quite double the thousandth (the copy is cheap next to the lock and the
+  # walk). Fine into the thousands; a topic with tens of thousands of churning
+  # subscribers is mutable state, i.e. the owner version (18), whose append
+  # stays flat however large the book grows.
   # The port must be created by the subscriber: only its creator may receive.
   def subscribe(topic, port)
     @topics.update(topic) {|ports| (ports || []) + [port] }
