@@ -1,6 +1,6 @@
 # Ractor::KeyLockHash
 
-A hash with a lock per key. In database terms, the row lock to
+A hash with one lock per key. In database terms, the row lock to
 [`Ractor::LockHash`](lockhash.md)'s table lock:
 
 | | atomic unit | unrelated keys | two keys together |

@@ -231,7 +231,7 @@ v.update {|rec| { status: rec[:status], seq: rec[:seq] + 1 } }
 | 8 | 1017 | 462 | 56 | 99 |
 | 16 | 1102 | 509 | 50 | 108 |
 
-**Fought over, neither scales and `TVar` stays about 2× ahead**, because the
+**Under contention, neither scales and `TVar` stays about 2× ahead**, because the
 loser of a race retries a short block where `LockVar` parks the thread and wakes
 it through a port, which costs more than the block did; and a transaction that
 keeps losing backs off, a 100 ns spin per consecutive loss, before running

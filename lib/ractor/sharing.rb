@@ -16,7 +16,7 @@ class Ractor
   #   Ractor::TVar          one or more variables, changed together -- start here
   #   Ractor::LockVar       one variable, and a block that runs exactly once
   #   Ractor::LockHash      a hash of those, atomic across its own keys
-  #   Ractor::KeyLockHash   a hash with a lock per key: parallel across keys
+  #   Ractor::KeyLockHash   a hash with one lock per key: parallel across keys
   #   Ractor::ActiveObject  an object of your own, owned by one Ractor
   #   Ractor::ActorHash     the same, with the interface already chosen: a hash
   #

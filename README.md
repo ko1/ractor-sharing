@@ -4,19 +4,19 @@ Ways for Ractors to share mutable state.
 
 Ractors keep their objects to themselves. What crosses between them is either
 frozen or copied, so there is nowhere to put a counter, a registry or a cache
-that several Ractors both read and change. Each class here is such a place.
+that multiple Ractors can both read and update. Each class here is such a place.
 
 What each one is, in a line:
 
 * **[`Ractor::TVar`](docs/tvar.md)** is a *transactional* variable. Read and
   write as many of them as you like inside one `Ractor.atomically` block, and
-  everything that block changed takes effect together or not at all. A block
+  all changes made by that block take effect together or not at all. A block
   that loses a race is rolled back and run again.
 * **[`Ractor::LockVar`](docs/lockvar.md)** is a variable behind a *lock*. An
   update waits for its turn, and then its block runs exactly once.
 * **[`Ractor::LockHash`](docs/lockhash.md)** is a hash behind one lock. A
-  `synchronize` section is atomic across the keys of that hash, and only those.
-* **[`Ractor::KeyLockHash`](docs/keylockhash.md)** is a hash with a lock per
+  `synchronize` section is atomic across the keys of that hash, and only that hash.
+* **[`Ractor::KeyLockHash`](docs/keylockhash.md)** is a hash with one lock per
   key: the row lock to LockHash's table lock. Updates to unrelated keys run in
   parallel, and nothing is atomic across two keys.
 * **[`Ractor::ActiveObject`](docs/active_object.md)** is an object that lives in
@@ -26,8 +26,8 @@ What each one is, in a line:
   of its own. Callers send it blocks to run on it.
 
 **Start with `Ractor::TVar`.** It takes one variable or several, it cannot
-deadlock, and it is the quickest of these when a variable is fought over. Move
-off it only for a reason the others below name.
+deadlock, and it is the quickest of these under contention. Choose another
+abstraction only when one of the reasons below applies.
 
 | | reach for it when | read | write |
 |---|---|---:|---:|
@@ -67,7 +67,7 @@ require "ractor/actor_hash"
 **The default: `TVar`.** One variable or a dozen, and the same code either way:
 whatever a transaction changes, the rest of the program sees all of it or none of
 it. There is no lock to take in the right order, so two transactions can never
-deadlock, and when a variable is genuinely fought over it is the quickest thing
+deadlock, and under genuine contention it is the quickest thing
 here, because losing a race and retrying beats parking a thread.
 
 ```ruby
@@ -125,7 +125,7 @@ have run again, and a side effect in them with it.
 **The same, for a hash: `LockHash`.** A registry, a cache, a scoreboard each
 worker writes a row of, where the keys are not known in advance. Reads need no
 ceremony; writes go inside `synchronize`, and everything one section changes
-appears at once. Atomic across its own keys, and only those.
+appears at once. Atomic across its own keys, and only that hash.
 
 ```ruby
 board = Ractor::LockHash.new(done: 0)
@@ -268,7 +268,7 @@ machine's limit.
 | `ActorHash#call` | 3166 | 1740 | 747 |
 | no sharing at all | 117 | n/a | 18 |
 
-**Fought over, nothing scales and `TVar` stays about 2× ahead**, because losing a
+**Under contention, nothing scales and `TVar` stays about 2× ahead**, because losing a
 race and running a short block again is cheaper than parking a thread and waking
 it, and a transaction that keeps losing backs off, about 100 ns per consecutive
 loss, spinning rather than sleeping, before running again. That cell is the

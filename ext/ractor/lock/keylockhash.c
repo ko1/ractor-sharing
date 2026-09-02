@@ -1,7 +1,7 @@
 #include "lock.h"
 #include "ruby/st.h"
 
-/* Ractor::KeyLockHash - a hash with a lock per key, near enough.
+/* Ractor::KeyLockHash - a hash with one lock per key, near enough.
  *
  * Ractor::LockHash is the table lock: one lock over the whole hash, so a
  * section is atomic across its keys and unrelated keys wait for each other.

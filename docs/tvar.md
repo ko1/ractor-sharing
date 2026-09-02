@@ -3,7 +3,7 @@
 A variable Ractors can share, and the one to reach for first.
 [Software transactional memory](https://en.wikipedia.org/wiki/Software_transactional_memory)
 for Ractors and Threads: read and write as many TVars as you like inside
-`Ractor.atomically`, and everything that block changes takes effect together or
+`Ractor.atomically`, and all changes made by that block take effect together or
 not at all.
 
 A TVar holds any shareable object, not only a number:
@@ -116,7 +116,7 @@ than one does (both about 80 ns, inside the noise), because the commit is then
 all of the work. Transaction
 bodies do run in parallel; it is the commit that does not.
 
-**Fought over, retrying beats waiting.** Sixteen Ractors updating the *same*
+**Under contention, retrying beats waiting.** Sixteen Ractors updating the *same*
 variable cost about 509 ns per completed update against 1102 for a LockVar,
 because the loser of a race runs a short block again rather than parking a
 thread and waking it. A transaction that loses twice in a row also **backs
