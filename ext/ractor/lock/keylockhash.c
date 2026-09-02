@@ -187,6 +187,23 @@ klh_lookup_body(VALUE ptr)
     return Qundef;
 }
 
+/* store_if_absent: return the value if the key is set, otherwise the block runs
+ * ONCE under this key's lock and its result is stored.  The hit path -- the
+ * common one in a cache -- never yields, so it costs a read, not an update. */
+static VALUE
+klh_store_if_absent_body(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+    struct klh_op *op = arg->data;
+    st_data_t found;
+    VALUE computed;
+
+    if (st_lookup(op->shard->tbl, (st_data_t)op->key, &found)) return (VALUE)found;
+    computed = rs_shareable_value(rb_yield(op->key));
+    st_insert(op->shard->tbl, (st_data_t)op->key, (st_data_t)computed);
+    return computed;
+}
+
 static VALUE
 klh_update_body(VALUE ptr)
 {
@@ -334,6 +351,27 @@ klh_key_p(VALUE self, VALUE key)
  *  nil for a missing key, so "whether the block saw nil" is "whether you
  *  created it" -- the put-if-absent idiom needs nothing more.
  */
+/*
+ *  call-seq:
+ *     keylockhash.store_if_absent(key) {|key| computed } -> value
+ *
+ *  The value at +key+ if it is set; otherwise the block runs once, under that
+ *  key's lock, and its result is stored and returned -- the per-key analogue of
+ *  Ractor.store_if_absent.  This is the memoize / cache primitive: simultaneous
+ *  misses on one key compute once and the rest read the answer, and a hit never
+ *  runs the block at all.
+ */
+static VALUE
+klh_store_if_absent(VALUE self, VALUE key)
+{
+    struct klh_op op;
+    rb_need_block();
+    key = rs_hash_key(key);
+    klh_check_shareable(key);   /* may insert it */
+    op = (struct klh_op){ klh_shard_for(self, key), key, Qnil };
+    return KLH_GUARDED(self, &op, klh_store_if_absent_body);
+}
+
 static VALUE
 klh_update(VALUE self, VALUE key)
 {
@@ -447,6 +485,7 @@ Init_keylockhash_class(void)
     rb_define_method(rb_cRactorKeyLockHash, "fetch", klh_fetch, -1);
     rb_define_method(rb_cRactorKeyLockHash, "key?", klh_key_p, 1);
     rb_define_method(rb_cRactorKeyLockHash, "update", klh_update, 1);
+    rb_define_method(rb_cRactorKeyLockHash, "store_if_absent", klh_store_if_absent, 1);
     rb_define_method(rb_cRactorKeyLockHash, "increment", klh_increment, -1);
     rb_define_method(rb_cRactorKeyLockHash, "[]=", klh_aset, 2);
     rb_define_method(rb_cRactorKeyLockHash, "delete", klh_delete, 1);

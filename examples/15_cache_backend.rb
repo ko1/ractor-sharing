@@ -15,12 +15,10 @@ CACHE = Ractor::KeyLockHash.new
 
 def fetch_fragment(key)
   computed = false
-  html = CACHE.update(key) do |cached|
-    cached || begin
-      computed = true
-      sleep 0.02                      # an expensive render, allegedly
-      "<div id=#{key}>rendered</div>"
-    end
+  html = CACHE.store_if_absent(key) do          # a hit never runs this block
+    computed = true
+    sleep 0.02                                 # an expensive render, allegedly
+    "<div id=#{key}>rendered</div>"
   end
   [html, computed]
 end

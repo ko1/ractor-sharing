@@ -31,7 +31,7 @@ end
 CACHE = Ractor::KeyLockHash.new
 
 def is_prime?(n, who)
-  CACHE.update(n) {|v| v.nil? ? [trial_divide(n), who] : v }.first
+  CACHE.store_if_absent(n) { [trial_divide(n), who] }.first   # a hit skips the block
 end
 
 # --- nth_prime: one growing sieve, owned ------------------------------------

@@ -50,6 +50,7 @@ m.inspect
 
 m[key] = value              # write, under that key's lock
 m.update(key) {|v| new_v }  # read-modify-write under one hold; v is nil if absent
+m.store_if_absent(key) { ... } # the value, or compute-and-store once; a hit skips the block
 m.increment(key, by = 1)    # update with the block written for you; missing counts as 0
 m.delete(key)               # returns the old value, or nil
 ```

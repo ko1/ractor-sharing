@@ -10,8 +10,30 @@ class KeyLockHashTest < Test::Unit::TestCase
   # --- API ----------------------------------------------------------------
 
   def test_public_api
-    assert_equal %i[[] []= delete fetch increment inspect key? keys to_h update].sort,
+    assert_equal %i[[] []= delete fetch store_if_absent increment inspect key? keys to_h update].sort,
                  Ractor::KeyLockHash.instance_methods(false).sort
+  end
+
+  def test_store_if_absent
+    runs = 0
+    assert_equal 10, @m.store_if_absent(:new) { runs += 1; 10 }   # miss computes
+    assert_equal 10, @m.store_if_absent(:new) { runs += 1; 99 }   # hit skips block
+    assert_equal 1, runs, "the block ran only on the miss"
+    assert_equal 1, @m.store_if_absent(:a) { 99 }, "existing key is returned untouched"
+    assert_raise(LocalJumpError) { @m.store_if_absent(:x) }
+    assert_true @m.store_if_absent(:arr) { [1] }.frozen?, "computed value made shareable"
+  end
+
+  def test_store_if_absent_computes_once_under_contention
+    # The block holds the key's lock, so it must not take a second lock -- the
+    # count of who computed rides in the stored value instead.
+    m = Ractor::KeyLockHash.new
+    rs = 8.times.map do |i|
+      Ractor.new(m, i) { |x, id| x.store_if_absent(:k) { [:by, id, rand] } }
+    end
+    results = rs.map(&:value)
+    assert_equal 1, results.uniq.size, "all eight saw the one stored value"
+    assert_equal :by, results.first.first
   end
 
   def test_reads
