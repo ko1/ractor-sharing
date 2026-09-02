@@ -162,4 +162,7 @@ The block holds the lock while it runs, so every other reader and writer of this
 hash waits for it. Change the entries and nothing else: no IO, no waiting on
 anything, no calling out to code that might.
 
+A worked transfer ledger, accounts created mid-flight and audited to the
+point, is [examples/16_points_ledger.rb](../examples/16_points_ledger.rb).
+
 Part of [ractor-sharing](../README.md).
