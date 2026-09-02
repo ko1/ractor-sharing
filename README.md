@@ -208,9 +208,9 @@ one page wait for the first -- and waiting is correct here, because everyone
 waiting would have rendered the same page themselves: the system does the work
 once instead of eight times, and a miss on a *different* page never queues at
 all. (That is the one shape where a long block is the right trade; the rule
-and its price are in [the docs](docs/keylockhash.md).) A per-client tally is
-`update(client) {|n| (n || 0) + 1 }`, and check-and-claim is the same line
-with `:claimed` in it.
+and its price are in [the docs](docs/keylockhash.md).) A per-client tally is one
+`hits.increment(client)`, and check-and-claim is `update` with `:claimed` in
+it.
 
 
 **A mutable object: `ActiveObject`.** When freezing the state is not on the

@@ -30,6 +30,9 @@ void rs_lock_destroy(struct rs_lock *lk);
 void rs_lock_acquire(struct rs_lock *lk);
 void rs_lock_release(struct rs_lock *lk);
 
+/* a + b when both are Fixnums and the sum still is; Qundef otherwise. */
+VALUE rs_fixnum_add(VALUE a, VALUE b);
+
 /* A stored value is deep-frozen in place unless already shareable. */
 VALUE rs_shareable_value(VALUE val);
 

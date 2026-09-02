@@ -10,7 +10,7 @@ class KeyLockHashTest < Test::Unit::TestCase
   # --- API ----------------------------------------------------------------
 
   def test_public_api
-    assert_equal %i[[] []= delete fetch inspect key? keys to_h update].sort,
+    assert_equal %i[[] []= delete fetch increment inspect key? keys to_h update].sort,
                  Ractor::KeyLockHash.instance_methods(false).sort
   end
 
@@ -44,6 +44,48 @@ class KeyLockHashTest < Test::Unit::TestCase
     assert_equal 2, @m.update(:a) { |v| v + 1 }
     assert_equal :made, @m.update(:new) { |v| v.nil? ? :made : v }
     assert_equal :made, @m[:new]
+  end
+
+  def test_increment
+    assert_equal 1, @m.increment(:hits), "a missing key counts as zero"
+    assert_equal 6, @m.increment(:hits, 5)
+    assert_equal 4, @m.increment(:hits, -2)
+    assert_equal 2, @m.increment(:a), "an existing value is added to"
+    assert_raise(TypeError) { @m.increment(:hits, nil) }
+    assert_equal 4, @m[:hits]
+  end
+
+  def test_increment_crosses_the_fixnum_boundary
+    max = 2**(0.size * 8 - 2) - 1
+    @m[:big] = max
+    assert_equal max + 1, @m.increment(:big)
+    assert_equal max + 2, @m.increment(:big)
+  end
+
+  def test_increment_on_a_value_without_plus
+    @m[:sym] = :oops
+    assert_raise(NoMethodError) { @m.increment(:sym) }
+    assert_equal :oops, @m[:sym]
+    assert_equal 1, @m.increment(:sym2), "the shard lock survived the raise"
+  end
+
+  def test_increment_is_atomic_across_ractors
+    m = Ractor::KeyLockHash.new
+    rs = 8.times.map do |i|
+      Ractor.new(m, i) do |x, id|
+        300.times { x.increment("own-#{id}".freeze) }
+        300.times { x.increment(:shared) }
+        :ok
+      end
+    end
+    rs.each(&:join)
+    8.times { |i| assert_equal 300, m["own-#{i}"] }
+    assert_equal 2400, m[:shared]
+  end
+
+  def test_increment_inside_update_is_refused
+    assert_raise(Ractor::NestedLockError) { @m.update(:a) { @m.increment(:b) } }
+    assert_nil @m[:b]
   end
 
   def test_the_claim_idiom

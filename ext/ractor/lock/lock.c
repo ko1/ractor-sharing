@@ -274,6 +274,17 @@ rs_hash_key(VALUE key)
     return key;
 }
 
+VALUE
+rs_fixnum_add(VALUE a, VALUE b)
+{
+    long x, y;
+
+    if (!FIXNUM_P(a) || !FIXNUM_P(b)) return Qundef;
+    x = FIX2LONG(a); y = FIX2LONG(b);
+    if (y > 0 ? x > FIXNUM_MAX - y : x < FIXNUM_MIN - y) return Qundef;
+    return LONG2FIX(x + y);
+}
+
 /* Values are made shareable on the way in: a frozen literal passes through
  * untouched, anything else is deep-frozen IN PLACE.  Storing a value here
  * means sharing it. */

@@ -152,17 +152,6 @@ lockvar_update(VALUE self)
  * be interrupted and nothing can re-enter. That lets the whole ceremony go --
  * the held marker, the ensure, the shareable check, the method dispatch -- and
  * leaves the lock and one add. Returns Qundef when it does not apply. */
-static VALUE
-lockvar_fixnum_add(VALUE a, VALUE b)
-{
-    long x, y;
-
-    if (!FIXNUM_P(a) || !FIXNUM_P(b)) return Qundef;
-    x = FIX2LONG(a);
-    y = FIX2LONG(b);
-    if (y > 0 ? x > FIXNUM_MAX - y : x < FIXNUM_MIN - y) return Qundef;
-    return LONG2FIX(x + y);
-}
 
 static VALUE
 lockvar_increment(int argc, VALUE *argv, VALUE self)
@@ -179,7 +168,7 @@ lockvar_increment(int argc, VALUE *argv, VALUE self)
         VALUE next;
 
         rs_lock_acquire(&lv->lock);
-        next = lockvar_fixnum_add(lv->value, amount);
+        next = rs_fixnum_add(lv->value, amount);
         if (!RB_UNDEF_P(next)) lv->value = next;
         rs_lock_release(&lv->lock);
 

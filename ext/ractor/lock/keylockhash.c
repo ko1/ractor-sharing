@@ -27,6 +27,7 @@
 #define KLH_NSHARDS 64
 
 static VALUE rb_cRactorKeyLockHash;
+static ID id_plus;
 
 struct klh_shard {
     st_table *tbl;              /* shareable VALUE => shareable VALUE */
@@ -189,6 +190,26 @@ klh_update_body(VALUE ptr)
     return next;
 }
 
+/* (old or 0) + amount, stored under the key's lock.  A missing key counts as
+ * zero, the way ActorHash#increment counts it: the tally shape needs no
+ * seeding.  Fixnums that stay Fixnums skip the dispatch. */
+static VALUE
+klh_increment_body(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+    struct klh_op *op = arg->data;
+    st_data_t found;
+    VALUE old = INT2FIX(0), next;
+
+    if (st_lookup(op->shard->tbl, (st_data_t)op->key, &found)) old = (VALUE)found;
+    next = rs_fixnum_add(old, op->value);
+    if (RB_UNDEF_P(next)) {
+        next = rs_shareable_value(rb_funcall(old, id_plus, 1, op->value));
+    }
+    st_insert(op->shard->tbl, (st_data_t)op->key, (st_data_t)next);
+    return next;
+}
+
 static VALUE
 klh_aset_body(VALUE ptr)
 {
@@ -315,6 +336,27 @@ klh_update(VALUE self, VALUE key)
 
 /*
  *  call-seq:
+ *     keylockhash.increment(key, by = 1) -> new value
+ *
+ *  Adds +by+ under that key's lock; a missing key counts as zero.  The same
+ *  as <code>update(key) {|v| (v || 0) + by }</code>.
+ */
+static VALUE
+klh_increment(int argc, VALUE *argv, VALUE self)
+{
+    VALUE key, by;
+    struct klh_op op;
+
+    rb_check_arity(argc, 1, 2);
+    key = rs_hash_key(argv[0]);
+    klh_check_shareable(key);   /* may insert it */
+    by = argc < 2 ? INT2FIX(1) : argv[1];
+    op = (struct klh_op){ klh_shard_for(self, key), key, by };
+    return KLH_GUARDED(self, &op, klh_increment_body);
+}
+
+/*
+ *  call-seq:
  *     keylockhash[key] = value -> value
  *
  *  Stores under that key's lock.  No ceremony: a plain write is atomic on its
@@ -385,6 +427,7 @@ klh_inspect(VALUE self)
 void
 Init_keylockhash_class(void)
 {
+    id_plus = rb_intern("+");
     rb_cRactorKeyLockHash = rb_define_class_under(rb_cRactor, "KeyLockHash", rb_cObject);
     rb_define_alloc_func(rb_cRactorKeyLockHash, klh_alloc);
     rb_define_method(rb_cRactorKeyLockHash, "initialize", klh_initialize, -1);
@@ -393,6 +436,7 @@ Init_keylockhash_class(void)
     rb_define_method(rb_cRactorKeyLockHash, "fetch", klh_fetch, -1);
     rb_define_method(rb_cRactorKeyLockHash, "key?", klh_key_p, 1);
     rb_define_method(rb_cRactorKeyLockHash, "update", klh_update, 1);
+    rb_define_method(rb_cRactorKeyLockHash, "increment", klh_increment, -1);
     rb_define_method(rb_cRactorKeyLockHash, "[]=", klh_aset, 2);
     rb_define_method(rb_cRactorKeyLockHash, "delete", klh_delete, 1);
     rb_define_method(rb_cRactorKeyLockHash, "keys", klh_keys, 0);
