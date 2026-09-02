@@ -162,7 +162,9 @@ The block holds the lock while it runs, so every other reader and writer of this
 hash waits for it. Change the entries and nothing else: no IO, no waiting on
 anything, no calling out to code that might.
 
-A worked transfer ledger, accounts created mid-flight and audited to the
-point, is [examples/16_points_ledger.rb](../examples/16_points_ledger.rb).
+A worked example is a session store with "log out everywhere":
+[examples/16_session_store.rb](../examples/16_session_store.rb). The token and
+the per-user index live in one hash, and revoking them one by one would leave
+a gap where a logged-out token still authenticates.
 
 Part of [ractor-sharing](../README.md).
