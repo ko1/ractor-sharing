@@ -248,6 +248,14 @@ of them and a deadlock detector cleans up when that cycles. There is no
 detector here, so the second lock is refused instead, and work that spans keys
 goes to the table lock or to the transactions.
 
+One thing no detector catches, there or here: taking too **few** locks. A
+deadlock is a cycle in who-waits-for-whom; locking one key, releasing it and
+then locking another produces no wait and no cycle, just an invariant quietly
+broken -- databases only catch that shape at serializable, because a declared
+transaction tells them what was supposed to be atomic. The declaration is the
+protection: keys that must agree go inside one `synchronize` or one
+`Ractor.atomically`, and no runtime is going to notice for you.
+
 
 ## Performance
 
