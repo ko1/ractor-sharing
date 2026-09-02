@@ -1,5 +1,6 @@
 #include "lock.h"
 #include "ruby/st.h"
+#include "rcuhash.h"
 
 /* Ractor::KeyLockHash - a hash with one lock per key, near enough.
  *
@@ -30,8 +31,8 @@ static VALUE rb_cRactorKeyLockHash;
 static ID id_plus;
 
 struct klh_shard {
-    st_table *tbl;              /* shareable VALUE => shareable VALUE */
-    struct rs_lock lock;
+    struct rcu_shard rcu;       /* lock-free readable; writers hold lock */
+    struct rs_lock lock;        /* writer mutex + guard for the block methods */
 };
 
 struct keylockhash {
@@ -50,35 +51,11 @@ klh_hash(VALUE key)
     return (st_index_t)NUM2LONG(rb_hash(key));
 }
 
-static st_index_t
-klh_key_hash(st_data_t key)
-{
-    return klh_hash((VALUE)key);
-}
-
-static int
-klh_key_cmp(st_data_t a, st_data_t b)
-{
-    return rb_eql((VALUE)a, (VALUE)b) ? 0 : 1;
-}
-
-static const struct st_hash_type klh_type = { klh_key_cmp, klh_key_hash };
-
-static int
-klh_mark_i(st_data_t key, st_data_t value, st_data_t arg)
-{
-    rb_gc_mark((VALUE)key);
-    rb_gc_mark((VALUE)value);
-    return ST_CONTINUE;
-}
-
 static void
 klh_mark(void *ptr)
 {
     struct keylockhash *kh = ptr;
-    for (int i = 0; i < KLH_NSHARDS; i++) {
-        st_foreach(kh->shards[i].tbl, klh_mark_i, 0);
-    }
+    for (int i = 0; i < KLH_NSHARDS; i++) rcu_shard_mark(&kh->shards[i].rcu);
 }
 
 static void
@@ -86,7 +63,7 @@ klh_free(void *ptr)
 {
     struct keylockhash *kh = ptr;
     for (int i = 0; i < KLH_NSHARDS; i++) {
-        st_free_table(kh->shards[i].tbl);
+        rcu_shard_destroy(&kh->shards[i].rcu);
         rs_lock_destroy(&kh->shards[i].lock);
     }
     ruby_xfree(kh);
@@ -97,7 +74,7 @@ klh_memsize(const void *ptr)
 {
     const struct keylockhash *kh = ptr;
     size_t n = sizeof(struct keylockhash);
-    for (int i = 0; i < KLH_NSHARDS; i++) n += st_memsize(kh->shards[i].tbl);
+    for (int i = 0; i < KLH_NSHARDS; i++) n += rcu_shard_memsize(&kh->shards[i].rcu);
     return n;
 }
 
@@ -123,20 +100,13 @@ klh_check_shareable(VALUE val)
     }
 }
 
-/* The key's #hash runs here, outside every lock. */
-static struct klh_shard *
-klh_shard_for(VALUE self, VALUE key)
-{
-    return &klh_ptr(self)->shards[klh_hash(key) % KLH_NSHARDS];
-}
-
 static VALUE
 klh_alloc(VALUE klass)
 {
     struct keylockhash *kh;
     VALUE obj = TypedData_Make_Struct(klass, struct keylockhash, &klh_data_type, kh);
     for (int i = 0; i < KLH_NSHARDS; i++) {
-        kh->shards[i].tbl = st_init_table(&klh_type);
+        rcu_shard_init(&kh->shards[i].rcu);
         rs_lock_init(&kh->shards[i].lock);
     }
     return obj;
@@ -145,11 +115,13 @@ klh_alloc(VALUE klass)
 static int
 klh_copy_pair(VALUE key, VALUE value, VALUE selfv)
 {
+    st_index_t h;
     key = rs_hash_key(key);
     klh_check_shareable(key);
     value = rs_shareable_value(value);
+    h = klh_hash(key);
     /* single-threaded: nobody else has seen self yet */
-    st_insert(klh_shard_for((VALUE)selfv, key)->tbl, (st_data_t)key, (st_data_t)value);
+    rcu_insert(&klh_ptr((VALUE)selfv)->shards[h % KLH_NSHARDS].rcu, h, key, value);
     return ST_CONTINUE;
 }
 
@@ -172,19 +144,26 @@ klh_initialize(int argc, VALUE *argv, VALUE self)
 
 struct klh_op {
     struct klh_shard *shard;
+    st_index_t hash;
     VALUE key;
     VALUE value;
 };
+
+/* Fills shard + hash for +key+; hash is computed once. */
+static struct klh_op
+klh_op_make(VALUE self, VALUE key, VALUE value)
+{
+    st_index_t h = klh_hash(key);
+    struct klh_op op = { &klh_ptr(self)->shards[h % KLH_NSHARDS], h, key, value };
+    return op;
+}
 
 static VALUE
 klh_lookup_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    st_data_t found;
-
-    if (st_lookup(op->shard->tbl, (st_data_t)op->key, &found)) return (VALUE)found;
-    return Qundef;
+    return rcu_get(&op->shard->rcu, op->hash, op->key);
 }
 
 /* store_if_absent: return the value if the key is set, otherwise the block runs
@@ -195,12 +174,12 @@ klh_store_if_absent_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    st_data_t found;
+    VALUE found = rcu_get(&op->shard->rcu, op->hash, op->key);
     VALUE computed;
 
-    if (st_lookup(op->shard->tbl, (st_data_t)op->key, &found)) return (VALUE)found;
+    if (!RB_UNDEF_P(found)) return found;
     computed = rs_shareable_value(rb_yield(op->key));
-    st_insert(op->shard->tbl, (st_data_t)op->key, (st_data_t)computed);
+    rcu_insert(&op->shard->rcu, op->hash, op->key, computed);
     return computed;
 }
 
@@ -209,12 +188,10 @@ klh_update_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    st_data_t found;
-    VALUE old = Qnil, next;
-
-    if (st_lookup(op->shard->tbl, (st_data_t)op->key, &found)) old = (VALUE)found;
-    next = rs_shareable_value(rb_yield(old));
-    st_insert(op->shard->tbl, (st_data_t)op->key, (st_data_t)next);
+    VALUE found = rcu_get(&op->shard->rcu, op->hash, op->key);
+    VALUE old = RB_UNDEF_P(found) ? Qnil : found;
+    VALUE next = rs_shareable_value(rb_yield(old));
+    rcu_insert(&op->shard->rcu, op->hash, op->key, next);
     return next;
 }
 
@@ -226,15 +203,13 @@ klh_increment_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    st_data_t found;
-    VALUE old = INT2FIX(0), next;
-
-    if (st_lookup(op->shard->tbl, (st_data_t)op->key, &found)) old = (VALUE)found;
-    next = rs_fixnum_add(old, op->value);
+    VALUE found = rcu_get(&op->shard->rcu, op->hash, op->key);
+    VALUE old = RB_UNDEF_P(found) ? INT2FIX(0) : found;
+    VALUE next = rs_fixnum_add(old, op->value);
     if (RB_UNDEF_P(next)) {
         next = rs_shareable_value(rb_funcall(old, id_plus, 1, op->value));
     }
-    st_insert(op->shard->tbl, (st_data_t)op->key, (st_data_t)next);
+    rcu_insert(&op->shard->rcu, op->hash, op->key, next);
     return next;
 }
 
@@ -243,8 +218,7 @@ klh_aset_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-
-    st_insert(op->shard->tbl, (st_data_t)op->key, (st_data_t)op->value);
+    rcu_insert(&op->shard->rcu, op->hash, op->key, op->value);
     return op->value;
 }
 
@@ -253,23 +227,21 @@ klh_delete_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    st_data_t key = (st_data_t)op->key, old;
-
-    if (st_delete(op->shard->tbl, &key, &old)) return (VALUE)old;
-    return Qnil;
+    VALUE old = rcu_delete(&op->shard->rcu, op->hash, op->key);
+    return RB_UNDEF_P(old) ? Qnil : old;
 }
 
 static int
-klh_collect_key(st_data_t key, st_data_t value, st_data_t ary)
+klh_collect_key(VALUE key, VALUE value, void *ary)
 {
-    rb_ary_push((VALUE)ary, (VALUE)key);
+    rb_ary_push((VALUE)ary, key);
     return ST_CONTINUE;
 }
 
 static int
-klh_collect_pair(st_data_t key, st_data_t value, st_data_t hash)
+klh_collect_pair(VALUE key, VALUE value, void *hash)
 {
-    rb_hash_aset((VALUE)hash, (VALUE)key, (VALUE)value);
+    rb_hash_aset((VALUE)hash, key, value);
     return ST_CONTINUE;
 }
 
@@ -278,9 +250,9 @@ klh_collect_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-
-    st_foreach(op->shard->tbl, RB_TYPE_P(op->value, T_ARRAY) ? klh_collect_key : klh_collect_pair,
-               (st_data_t)op->value);
+    rcu_shard_foreach(&op->shard->rcu,
+                      RB_TYPE_P(op->value, T_ARRAY) ? klh_collect_key : klh_collect_pair,
+                      (void *)op->value);
     return Qnil;
 }
 
@@ -293,30 +265,26 @@ klh_collect_body(VALUE ptr)
 
 /* --- methods -------------------------------------------------------------- */
 
-/* A read whose key is an immediate: st_lookup's compare is then rb_eql on two
- * immediates, pure C that runs no Ruby and cannot raise.  So no interrupt can
- * land between acquire and release and there is nothing to unwind -- take the
- * lock, look up, put it back, no held marker and no ensure.  This is what
- * LockVar#value does, applied per shard.  Returns Qundef if the key is not an
- * immediate, so the caller falls back to the guarded path (a String key's
- * #eql? is Ruby and could raise). */
+/* A read whose key is an immediate takes NO lock at all: see rcu_lookup.
+ * Returns Qundef for a non-immediate key so the caller falls back to the
+ * guarded (locked) path, where a String key's #eql? may run Ruby. */
 static VALUE
 klh_fast_lookup(VALUE self, VALUE key)
 {
+    st_index_t h;
     struct klh_shard *shard;
-    st_data_t found;
-    VALUE result;
 
     if (!SPECIAL_CONST_P(key)) return Qundef;
-
     /* Nesting is still refused: inside any update, a read raises. */
     if (RB_UNLIKELY(!NIL_P(rs_held(rb_thread_current())))) return Qundef;
 
-    shard = klh_shard_for(self, key);
-    rs_lock_acquire(&shard->lock);
-    result = st_lookup(shard->tbl, (st_data_t)key, &found) ? (VALUE)found : Qundef;
-    rs_lock_release(&shard->lock);
-    return result;
+    h = klh_hash(key);
+    shard = &klh_ptr(self)->shards[h % KLH_NSHARDS];
+    /* No lock: rcu_lookup loads the table and walks immutable nodes, writing
+     * nothing shared, so reads scale.  Immediate key => identity compare, no
+     * Ruby, no safepoint in the window, so GC (the grace period) cannot free a
+     * node this walk is on. */
+    return rcu_lookup(&shard->rcu, h, key);
 }
 
 /*
@@ -332,7 +300,7 @@ klh_aref(VALUE self, VALUE key)
     if (!RB_UNDEF_P(found)) return found;
     if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) return Qnil;
     {
-        struct klh_op op = { klh_shard_for(self, key), key, Qnil };
+        struct klh_op op = klh_op_make(self, key, Qnil);
         VALUE f = KLH_GUARDED(self, &op, klh_lookup_body);
         return RB_UNDEF_P(f) ? Qnil : f;
     }
@@ -358,9 +326,7 @@ klh_fetch(int argc, VALUE *argv, VALUE self)
 
     found = klh_fast_lookup(self, key);
     if (RB_UNDEF_P(found)) {
-        op.shard = klh_shard_for(self, key);
-        op.key = key;
-        op.value = Qnil;
+        op = klh_op_make(self, key, Qnil);
         found = SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))
               ? Qundef : KLH_GUARDED(self, &op, klh_lookup_body);
     }
@@ -377,7 +343,7 @@ klh_key_p(VALUE self, VALUE key)
     if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) {
         return RB_UNDEF_P(klh_fast_lookup(self, key)) ? Qfalse : Qtrue;
     }
-    op = (struct klh_op){ klh_shard_for(self, key), key, Qnil };
+    op = klh_op_make(self, key, Qnil);
     return RB_UNDEF_P(KLH_GUARDED(self, &op, klh_lookup_body)) ? Qfalse : Qtrue;
 }
 
@@ -407,7 +373,7 @@ klh_store_if_absent(VALUE self, VALUE key)
     rb_need_block();
     key = rs_hash_key(key);
     klh_check_shareable(key);   /* may insert it */
-    op = (struct klh_op){ klh_shard_for(self, key), key, Qnil };
+    op = klh_op_make(self, key, Qnil);
     return KLH_GUARDED(self, &op, klh_store_if_absent_body);
 }
 
@@ -418,7 +384,7 @@ klh_update(VALUE self, VALUE key)
     rb_need_block();
     key = rs_hash_key(key);     /* may insert it */
     klh_check_shareable(key);
-    op = (struct klh_op){ klh_shard_for(self, key), key, Qnil };
+    op = klh_op_make(self, key, Qnil);
     return KLH_GUARDED(self, &op, klh_update_body);
 }
 
@@ -439,7 +405,7 @@ klh_increment(int argc, VALUE *argv, VALUE self)
     key = rs_hash_key(argv[0]);
     klh_check_shareable(key);   /* may insert it */
     by = argc < 2 ? INT2FIX(1) : argv[1];
-    op = (struct klh_op){ klh_shard_for(self, key), key, by };
+    op = klh_op_make(self, key, by);
     return KLH_GUARDED(self, &op, klh_increment_body);
 }
 
@@ -459,7 +425,7 @@ klh_aset(VALUE self, VALUE key, VALUE value)
     key = rs_hash_key(key);
     klh_check_shareable(key);
     value = rs_shareable_value(value);
-    op = (struct klh_op){ klh_shard_for(self, key), key, value };
+    op = klh_op_make(self, key, value);
     return KLH_GUARDED(self, &op, klh_aset_body);
 }
 
@@ -470,7 +436,7 @@ klh_aset(VALUE self, VALUE key, VALUE value)
 static VALUE
 klh_delete(VALUE self, VALUE key)
 {
-    struct klh_op op = { klh_shard_for(self, key), key, Qnil };
+    struct klh_op op = klh_op_make(self, key, Qnil);
     return KLH_GUARDED(self, &op, klh_delete_body);
 }
 
@@ -484,7 +450,7 @@ klh_keys(VALUE self)
     struct keylockhash *kh = klh_ptr(self);
 
     for (int i = 0; i < KLH_NSHARDS; i++) {
-        struct klh_op op = { &kh->shards[i], Qnil, ary };
+        struct klh_op op = { &kh->shards[i], 0, Qnil, ary };
         KLH_GUARDED(self, &op, klh_collect_body);
     }
     return ary;
@@ -497,7 +463,7 @@ klh_to_h(VALUE self)
     struct keylockhash *kh = klh_ptr(self);
 
     for (int i = 0; i < KLH_NSHARDS; i++) {
-        struct klh_op op = { &kh->shards[i], Qnil, hash };
+        struct klh_op op = { &kh->shards[i], 0, Qnil, hash };
         KLH_GUARDED(self, &op, klh_collect_body);
     }
     return hash;

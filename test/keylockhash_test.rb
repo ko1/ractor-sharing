@@ -157,17 +157,21 @@ class KeyLockHashTest < Test::Unit::TestCase
     assert_raise(Ractor::NestedLockError) { other.update { @m[:a] } }
   end
 
-  def test_a_key_callback_raises_instead_of_deadlocking
+  def test_a_key_callback_that_reads_the_map_does_not_deadlock
+    # A read takes no lock (RCU), so a key whose #hash reads the same map is
+    # safe -- it neither deadlocks (the old st bug) nor has to raise: the inner
+    # read just runs.
     map = Ractor::KeyLockHash.new
     probing = Class.new do
       def initialize(m) = @m = m
-      def hash = (@m[:probe]; 1)
+      def hash; @m[:probe]; 1; end
       def eql?(o) = equal?(o)
     end
     key = Ractor.make_shareable(probing.new(map))
-    t = Thread.new { map[key] rescue $! }
+    map[:probe] = :ok
+    t = Thread.new { map[key] }
     assert_not_nil t.join(3), "a key callback into the same map deadlocked"
-    assert_kind_of Ractor::NestedLockError, t.value
+    assert_nil t.value, "the key is absent; the callback's own read saw :probe"
   end
 
   def test_initialize_cannot_be_rerun
