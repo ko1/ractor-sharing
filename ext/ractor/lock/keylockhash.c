@@ -371,6 +371,18 @@ klh_store_if_absent(VALUE self, VALUE key)
 {
     struct klh_op op;
     rb_need_block();
+
+    /* Fast path: a hit on an immediate key is a lock-free read, so the common
+     * case in a cache -- the value is already there -- never takes the lock or
+     * runs the block.  A miss falls through to compute-and-store under the lock,
+     * where a stampede still computes once. */
+    if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) {
+        st_index_t h = klh_hash(key);
+        struct klh_shard *shard = &klh_ptr(self)->shards[h % KLH_NSHARDS];
+        VALUE found = rcu_lookup(&shard->rcu, h, key);
+        if (!RB_UNDEF_P(found)) return found;
+    }
+
     key = rs_hash_key(key);
     klh_check_shareable(key);   /* may insert it */
     op = klh_op_make(self, key, Qnil);
