@@ -44,7 +44,8 @@ a shared variable most often is.
 
 A LockVar holds one **shareable** object, and the store sees to it: a value
 that already is shareable passes through untouched, anything else is
-deep-frozen **in place**. No `.freeze` ceremony, and the object you handed
+deep-frozen **in place**. No `.freeze` and no `Ractor.make_shareable` of your
+own, and the object you handed
 over comes out frozen -- hand over things you are done mutating (storing
 `STDOUT` would freeze `STDOUT`). A value that cannot be made shareable raises
 `Ractor::IsolationError`.

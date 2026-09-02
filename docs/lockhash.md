@@ -67,7 +67,8 @@ released is already stale, and inside a section `keys` says the same thing.
 that block **after** the lookup has released the lock, so a default that reads
 this hash again is fine.
 
-Values are **made shareable on the way in** (deep-frozen in place; a value
+Values are **made shareable on the way in**, so neither `.freeze` nor
+`Ractor.make_shareable` is yours to write (deep-frozen in place; a value
 that cannot be raises `Ractor::IsolationError`). Keys must be shareable
 already, `ArgumentError` otherwise, with one courtesy borrowed from `Hash`
 itself: a bare String key is stored as a frozen copy, and yours stays yours.

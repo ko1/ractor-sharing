@@ -66,7 +66,8 @@ tv.increment(n = 1)  # add in one step; inside or out, for values that answer to
 
 Values are **made shareable on the way in**: one that already is passes
 through untouched, anything else is deep-frozen **in place** -- storing a value
-here means sharing it, so no `.freeze` ceremony is needed, and the object you
+here means sharing it, so neither `.freeze` nor `Ractor.make_shareable` is
+yours to write, and the object you
 handed over comes out frozen. Hand over things you are done mutating: storing
 `STDOUT` would freeze `STDOUT`. A value that cannot be made shareable raises
 `Ractor::IsolationError`.
