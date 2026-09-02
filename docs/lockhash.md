@@ -54,7 +54,9 @@ released is already stale, and inside a section `keys` says the same thing.
 that block **after** the lookup has released the lock, so a default that reads
 this hash again is fine.
 
-Keys and values must be **shareable**; `ArgumentError` otherwise. The LockHash
+Keys and values must be **shareable**; `ArgumentError` otherwise, with one
+courtesy borrowed from `Hash` itself: a bare String key is stored as a frozen
+copy, and yours stays yours. The LockHash
 itself is frozen and shareable, so it can be passed to any Ractor. `keys` and
 `to_h` return plain mutable copies, yours to reshape; everything inside them is
 shareable already, so `Ractor.make_shareable(h.to_h)` is all it takes to hand

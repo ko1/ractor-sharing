@@ -263,6 +263,17 @@ rs_guarded(VALUE self, struct rs_lock *lk, VALUE (*body)(VALUE), void *data,
     return rb_ensure(rs_guard_body, (VALUE)&arg, rs_guard_ensure, (VALUE)&arg);
 }
 
+/* Hash dups and freezes a bare String key rather than rejecting it, and so do
+ * we: the copy is shareable, and the caller's string stays their own. */
+VALUE
+rs_hash_key(VALUE key)
+{
+    if (RB_TYPE_P(key, T_STRING) && !RB_OBJ_FROZEN(key)) {
+        return rb_str_new_frozen(key);
+    }
+    return key;
+}
+
 void
 rs_lock_init_class(void)
 {

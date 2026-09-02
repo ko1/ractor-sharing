@@ -64,10 +64,23 @@ class KeyLockHashTest < Test::Unit::TestCase
   def test_keys_and_values_must_be_shareable
     assert_raise(ArgumentError) { Ractor::KeyLockHash.new(k: []) }
     assert_raise(ArgumentError) { @m[:x] = [] }
-    assert_raise(ArgumentError) { @m["mutable key".dup] = 1 }
-    assert_raise(ArgumentError) { @m.update("mutable key".dup) { 1 } }
+    assert_raise(ArgumentError) { @m[[1]] = 1 }
     assert_raise(ArgumentError) { @m.update(:x) { [] } }
     assert_false @m.key?(:x), "a rejected update must not leave the key behind"
+  end
+
+  def test_a_bare_string_key_is_dupped_and_frozen_like_hash
+    mine = String.new("order-1")
+    @m[mine] = 1
+    @m.update(String.new("order-2")) { 2 }
+    stored = @m.keys.grep(/order/).sort
+    assert_equal %w[order-1 order-2], stored
+    assert_true stored.all?(&:frozen?)
+    assert_false mine.frozen?, "the caller's string stays their own"
+    assert_false stored.any? { |k| k.equal?(mine) }
+    assert_equal 1, @m["order-1"]
+    m2 = Ractor::KeyLockHash.new(String.new("k") => 1)
+    assert_equal 1, m2["k"]
   end
 
   def test_no_second_key_inside_update

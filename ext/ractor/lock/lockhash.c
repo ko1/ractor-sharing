@@ -132,6 +132,7 @@ lockhash_alloc(VALUE klass)
 static int
 lockhash_copy_pair(VALUE key, VALUE value, VALUE dest)
 {
+    key = rs_hash_key(key);
     lockhash_check_shareable(key);
     lockhash_check_shareable(value);
     st_insert(((struct lockhash *)dest)->tbl, (st_data_t)key, (st_data_t)value);
@@ -319,6 +320,7 @@ lockhash_to_h(VALUE self)
 static VALUE
 lockhash_aset(VALUE self, VALUE key, VALUE value)
 {
+    key = rs_hash_key(key);
     lockhash_check_writable(self, "[]=");
     lockhash_check_shareable(key);
     lockhash_check_shareable(value);

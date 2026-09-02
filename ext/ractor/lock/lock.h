@@ -30,6 +30,9 @@ void rs_lock_destroy(struct rs_lock *lk);
 void rs_lock_acquire(struct rs_lock *lk);
 void rs_lock_release(struct rs_lock *lk);
 
+/* A bare String key becomes a frozen copy, the way Hash stores one. */
+VALUE rs_hash_key(VALUE key);
+
 /* Which lock object this thread is inside, or Qnil. */
 VALUE rs_held(VALUE thread);
 void rs_held_set(VALUE thread, VALUE obj);

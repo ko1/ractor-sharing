@@ -29,7 +29,7 @@ nothing more:
 
 ```ruby
 jobs = Ractor::KeyLockHash.new
-req_id = "order-1701".freeze   # keys must be shareable, like everything here
+req_id = "order-1701"   # a bare String key is dup'd and frozen for you, like Hash's
 mine = false
 jobs.update(req_id) { |v| v ? v : (mine = true; :claimed) }
 mine #=> true
@@ -53,8 +53,10 @@ m.update(key) {|v| new_v }  # read-modify-write under one hold; v is nil if abse
 m.delete(key)               # returns the old value, or nil
 ```
 
-Keys and values must be **shareable**; `ArgumentError` otherwise. The map
-itself is frozen and shareable, so it can be passed to any Ractor.
+Keys and values must be **shareable**; `ArgumentError` otherwise, with one
+courtesy borrowed from `Hash` itself: a bare String key is stored as a frozen
+copy, and yours stays yours. The map itself is frozen and shareable, so it can
+be passed to any Ractor.
 
 ## One key at a time
 

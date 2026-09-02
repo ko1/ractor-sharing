@@ -114,6 +114,17 @@ class LockHashTest < Test::Unit::TestCase
     assert_equal({}, Ractor::LockHash.new.to_h)
   end
 
+  def test_a_bare_string_key_is_dupped_and_frozen_like_hash
+    mine = String.new("row")
+    @h.synchronize { |h| h[mine] = 9 }
+    stored = @h.keys.grep(/row/).first
+    assert_true stored.frozen?
+    assert_false mine.frozen?
+    assert_false stored.equal?(mine)
+    assert_equal 9, @h["row"]
+    assert_equal 1, Ractor::LockHash.new(String.new("k") => 1)["k"]
+  end
+
   def test_initial_must_be_shareable
     assert_raise(ArgumentError) { Ractor::LockHash.new(a: []) }
     assert_raise(ArgumentError) { Ractor::LockHash.new([] => 1) }

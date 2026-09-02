@@ -133,6 +133,7 @@ klh_alloc(VALUE klass)
 static int
 klh_copy_pair(VALUE key, VALUE value, VALUE selfv)
 {
+    key = rs_hash_key(key);
     klh_check_shareable(key);
     klh_check_shareable(value);
     /* single-threaded: nobody else has seen self yet */
@@ -305,9 +306,11 @@ klh_key_p(VALUE self, VALUE key)
 static VALUE
 klh_update(VALUE self, VALUE key)
 {
-    struct klh_op op = { klh_shard_for(self, key), key, Qnil };
+    struct klh_op op;
     rb_need_block();
-    klh_check_shareable(key);   /* may insert it */
+    key = rs_hash_key(key);     /* may insert it */
+    klh_check_shareable(key);
+    op = (struct klh_op){ klh_shard_for(self, key), key, Qnil };
     return KLH_GUARDED(self, &op, klh_update_body);
 }
 
@@ -322,10 +325,12 @@ klh_update(VALUE self, VALUE key)
 static VALUE
 klh_aset(VALUE self, VALUE key, VALUE value)
 {
-    struct klh_op op = { klh_shard_for(self, key), key, value };
+    struct klh_op op;
 
+    key = rs_hash_key(key);
     klh_check_shareable(key);
     klh_check_shareable(value);
+    op = (struct klh_op){ klh_shard_for(self, key), key, value };
     return KLH_GUARDED(self, &op, klh_aset_body);
 }
 
