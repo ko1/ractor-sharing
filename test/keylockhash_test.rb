@@ -61,12 +61,14 @@ class KeyLockHashTest < Test::Unit::TestCase
 
   # --- rules ----------------------------------------------------------------
 
-  def test_keys_and_values_must_be_shareable
-    assert_raise(ArgumentError) { Ractor::KeyLockHash.new(k: []) }
-    assert_raise(ArgumentError) { @m[:x] = [] }
+  def test_values_are_made_shareable_and_keys_must_be
+    assert_true Ractor::KeyLockHash.new(k: [])[:k].frozen?
+    arr = [1, [2]]
+    @m[:x] = arr
+    assert_true arr.frozen? && arr[1].frozen?, "deep-frozen in place"
+    assert_equal [1, [2], 2], @m.update(:x) { |v| v + [2] }
+    assert_true @m[:x].frozen?
     assert_raise(ArgumentError) { @m[[1]] = 1 }
-    assert_raise(ArgumentError) { @m.update(:x) { [] } }
-    assert_false @m.key?(:x), "a rejected update must not leave the key behind"
   end
 
   def test_a_bare_string_key_is_dupped_and_frozen_like_hash

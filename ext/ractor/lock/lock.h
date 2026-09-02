@@ -30,6 +30,9 @@ void rs_lock_destroy(struct rs_lock *lk);
 void rs_lock_acquire(struct rs_lock *lk);
 void rs_lock_release(struct rs_lock *lk);
 
+/* A stored value is deep-frozen in place unless already shareable. */
+VALUE rs_shareable_value(VALUE val);
+
 /* A bare String key becomes a frozen copy, the way Hash stores one. */
 VALUE rs_hash_key(VALUE key);
 

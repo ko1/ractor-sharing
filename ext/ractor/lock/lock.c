@@ -274,6 +274,18 @@ rs_hash_key(VALUE key)
     return key;
 }
 
+/* Values are made shareable on the way in: a frozen literal passes through
+ * untouched, anything else is deep-frozen IN PLACE.  Storing a value here
+ * means sharing it. */
+VALUE
+rs_shareable_value(VALUE val)
+{
+    if (RB_UNLIKELY(!rb_ractor_shareable_p(val))) {
+        return rb_ractor_make_shareable(val);
+    }
+    return val;
+}
+
 void
 rs_lock_init_class(void)
 {

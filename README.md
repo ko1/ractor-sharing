@@ -110,6 +110,19 @@ board.synchronize {|b| b[:worker_1] = 42 }
 board.to_h #=> {worker_1: 42}
 ```
 
+**Independent keys, in parallel: `KeyLockHash`.** When no two keys ever need to
+change together, the whole-hash lock above is paying for atomicity nobody asked
+for: unrelated clients wait in one queue. `KeyLockHash` locks per key, so they
+do not, and `update` makes the check-and-claim shapes one line:
+
+```ruby
+seen = Ractor::KeyLockHash.new
+mine = false
+seen.update("req-1") {|v| v || (mine = true; :claimed) }
+mine #=> true
+```
+
+
 **A mutable object: `ActiveObject`.** When freezing the state is not on the
 table, give the object a Ractor of its own. It never leaves; callers send method
 calls in, the owner runs them one at a time, and the object goes on being an

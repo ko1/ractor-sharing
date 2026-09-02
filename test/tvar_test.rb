@@ -55,10 +55,11 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_equal 0.0, tv.value
   end
 
-  test 'Ractor::TVar can not set the unshareable value' do
-    assert_raise ArgumentError do
-      Ractor::TVar.new [1]
-    end
+  test 'an unshareable value is made shareable, in place' do
+    arr = [1, [2]]
+    tv = Ractor::TVar.new(arr)
+    assert_same arr, tv.value
+    assert arr.frozen? && arr[1].frozen?, "deep-frozen: storing it means sharing it"
   end
 
   ## with Ractors
@@ -76,13 +77,18 @@ class Ractor::TVarTest < Test::Unit::TestCase
 
   # --- what the documentation promises -------------------------------------
 
-  test "only shareable values are allowed" do
-    assert_raise(ArgumentError) { Ractor::TVar.new([]) }
+  test "values are made shareable on the way in" do
     tv = Ractor::TVar.new(0)
-    assert_raise(ArgumentError) { Ractor.atomically { tv.value = [] } }
-    assert_equal 0, tv.value, "a rejected write leaves the value alone"
-    Ractor.atomically { tv.value = [1].freeze }
+    arr = [1]
+    Ractor.atomically { tv.value = arr }
+    assert arr.frozen?
     assert_equal [1], tv.value
+
+    x = []
+    pr = proc { x << 1 }
+    x = [] # a reassigned capture: this proc cannot be made shareable
+    assert_raise(Ractor::IsolationError) { Ractor.atomically { tv.value = pr } }
+    assert_equal [1], tv.value, "a rejected write leaves the value alone"
   end
 
   # What is allowed outside a transaction. The API section of the documentation
@@ -187,14 +193,16 @@ class Ractor::TVarTest < Test::Unit::TestCase
     assert_true true, "did not crash"
   end
 
-  test "increment rejects an unshareable sum, inside a transaction as well as out" do
-    # The in-transaction path called + and stored whatever came back. A TVar only
-    # ever holds shareable values, and the sum of two frozen arrays is not one.
-    tv = Ractor::TVar.new([1].freeze)
-    assert_raise(ArgumentError) { Ractor.atomically { tv.increment([2].freeze) } }
-    assert_equal [1], tv.value
-    assert_raise(ArgumentError) { tv.increment([2].freeze) }
-    assert_equal [1], tv.value
+  test "increment makes an unshareable sum shareable, inside a transaction as well as out" do
+    # The in-transaction path once stored whatever + returned, unshareable
+    # included; now the sum is made shareable like any other stored value.
+    tv = Ractor::TVar.new([1])
+    Ractor.atomically { tv.increment([2].freeze) }
+    assert_equal [1, 2], tv.value
+    assert_true tv.value.frozen?
+    tv.increment([3].freeze)
+    assert_equal [1, 2, 3], tv.value
+    assert_true tv.value.frozen?
   end
 
   test "increment adds in one step" do

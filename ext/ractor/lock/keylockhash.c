@@ -135,7 +135,7 @@ klh_copy_pair(VALUE key, VALUE value, VALUE selfv)
 {
     key = rs_hash_key(key);
     klh_check_shareable(key);
-    klh_check_shareable(value);
+    value = rs_shareable_value(value);
     /* single-threaded: nobody else has seen self yet */
     st_insert(klh_shard_for((VALUE)selfv, key)->tbl, (st_data_t)key, (st_data_t)value);
     return ST_CONTINUE;
@@ -184,8 +184,7 @@ klh_update_body(VALUE ptr)
     VALUE old = Qnil, next;
 
     if (st_lookup(op->shard->tbl, (st_data_t)op->key, &found)) old = (VALUE)found;
-    next = rb_yield(old);
-    klh_check_shareable(next);
+    next = rs_shareable_value(rb_yield(old));
     st_insert(op->shard->tbl, (st_data_t)op->key, (st_data_t)next);
     return next;
 }
@@ -329,7 +328,7 @@ klh_aset(VALUE self, VALUE key, VALUE value)
 
     key = rs_hash_key(key);
     klh_check_shareable(key);
-    klh_check_shareable(value);
+    value = rs_shareable_value(value);
     op = (struct klh_op){ klh_shard_for(self, key), key, value };
     return KLH_GUARDED(self, &op, klh_aset_body);
 }

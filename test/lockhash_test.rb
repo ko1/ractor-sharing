@@ -125,8 +125,9 @@ class LockHashTest < Test::Unit::TestCase
     assert_equal 1, Ractor::LockHash.new(String.new("k") => 1)["k"]
   end
 
-  def test_initial_must_be_shareable
-    assert_raise(ArgumentError) { Ractor::LockHash.new(a: []) }
+  def test_initial_values_are_made_shareable_and_keys_must_be
+    h = Ractor::LockHash.new(a: [])
+    assert_true h[:a].frozen?
     assert_raise(ArgumentError) { Ractor::LockHash.new([] => 1) }
     assert_raise(TypeError) { Ractor::LockHash.new(1) }
   end
@@ -157,10 +158,13 @@ class LockHashTest < Test::Unit::TestCase
     assert_raise(LocalJumpError) { @h.synchronize }
   end
 
-  def test_values_must_be_shareable
-    assert_raise(ArgumentError) { @h.synchronize { |h| h[:b] = [] } }
+  def test_values_are_made_shareable_and_keys_must_be
+    arr = [1]
+    @h.synchronize { |h| h[:b] = arr }
+    assert_true arr.frozen?, "frozen in place: storing it means sharing it"
+    assert_same arr, @h[:b]
     assert_raise(ArgumentError) { @h.synchronize { |h| h[[]] = 1 } }
-    assert_equal({ a: 1 }, @h.to_h)
+    assert_equal({ a: 1, b: [1] }, @h.to_h)
     assert_acquirable @h
   end
 

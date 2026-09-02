@@ -45,14 +45,23 @@ class LockVarTest < Test::Unit::TestCase
     assert_nil Ractor::LockVar.new.value
   end
 
-  def test_only_shareable_values
-    assert_raise(ArgumentError) { Ractor::LockVar.new({}) }
+  def test_values_are_made_shareable_in_place
     lv = Ractor::LockVar.new(1)
-    assert_raise(ArgumentError) { lv.update { [] } }
-    assert_equal 1, lv.value, "a rejected update leaves the value alone"
+    arr = [1, [2]]
+    lv.update { arr }
+    assert_same arr, lv.value, "stored as is, not copied"
+    assert_true arr.frozen?, "and frozen in place: storing it means sharing it"
+    assert_true arr[1].frozen?, "deeply"
+
+    lv2 = Ractor::LockVar.new({ a: 1 })   # no .freeze ceremony at construction either
+    assert_true lv2.value.frozen?
+
+    x = []
+    pr = proc { x << 1 }
+    x = [] # a reassigned capture: this proc cannot be made shareable
+    assert_raise(Ractor::IsolationError) { lv.update { pr } }
+    assert_equal arr, lv.value, "a rejected update leaves the value alone"
     assert_acquirable lv
-    lv.update { [1, 2].freeze }
-    assert_equal [1, 2], lv.value
   end
 
   def test_lockvar_is_frozen_and_shareable
@@ -142,11 +151,9 @@ class LockVarTest < Test::Unit::TestCase
   def test_increment_uses_plus
     lv = Ractor::LockVar.new(1.5)
     assert_equal 2.5, lv.increment
-    lv = Ractor::LockVar.new([1].freeze)
-    assert_raise(ArgumentError, "the sum of two frozen arrays is not frozen") do
-      lv.increment([2].freeze)
-    end
-    assert_equal [1], lv.value
+    lv = Ractor::LockVar.new([1])
+    assert_equal [1, 2], lv.increment([2].freeze)
+    assert_true lv.value.frozen?, "the sum was made shareable on the way in"
     assert_acquirable lv
   end
 

@@ -612,13 +612,23 @@ tvar_ptr(VALUE self)
     return slot;
 }
 
+/* Values are made shareable on the way in: a frozen literal passes through
+ * untouched (one shareable_p check), anything else is deep-frozen IN PLACE.
+ * Storing a value here means sharing it; freezing it is not a side effect of
+ * that, it is the meaning of it. */
+static VALUE
+tvar_shareable_value(VALUE val)
+{
+    if (RB_UNLIKELY(!rb_ractor_shareable_p(val))) {
+        return rb_ractor_make_shareable(val);
+    }
+    return val;
+}
+
 static VALUE
 tvar_new_(VALUE self, VALUE init)
 {
-    // init should be shareable
-    if (RB_UNLIKELY(!rb_ractor_shareable_p(init))) {
-        rb_raise(rb_eArgError, "only shareable object are allowed");
-    }
+    init = tvar_shareable_value(init);
 
     struct tx_global *txg = tx_global_ptr();
     struct tvar_slot *slot;
@@ -664,9 +674,7 @@ tvar_value(VALUE self)
 static VALUE
 tvar_value_set(VALUE self, VALUE val)
 {
-    if (RB_UNLIKELY(!rb_ractor_shareable_p(val))) {
-        rb_raise(rb_eArgError, "only shareable object are allowed");
-    }
+    val = tvar_shareable_value(val);
 
     struct tx_logs *tx = tx_logs();
     tx_check(tx);
@@ -725,12 +733,8 @@ tvar_value_increment_(VALUE self, VALUE inc)
     else {
         recv = tx_get(tx, slot, self);
         if (RB_UNLIKELY((ret = tvar_calc_inc(recv, inc)) == Qundef)) {
-            /* + can return anything; a TVar only ever holds shareable values, and
-             * outside a transaction this path is checked by #value=. */
-            ret = rb_funcall(recv, rb_intern("+"), 1, inc);
-            if (RB_UNLIKELY(!rb_ractor_shareable_p(ret))) {
-                rb_raise(rb_eArgError, "only shareable object are allowed");
-            }
+            /* + can return anything; a TVar only ever holds shareable values. */
+            ret = tvar_shareable_value(rb_funcall(recv, rb_intern("+"), 1, inc));
         }
         tx_set(tx, ret, slot, self);
     }

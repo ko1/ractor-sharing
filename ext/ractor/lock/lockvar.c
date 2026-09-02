@@ -60,14 +60,6 @@ lockvar_ptr(VALUE self)
     return lv;
 }
 
-static void
-lockvar_check_shareable(VALUE val)
-{
-    if (RB_UNLIKELY(!rb_ractor_shareable_p(val))) {
-        rb_raise(rb_eArgError, "only shareable object are allowed");
-    }
-}
-
 static VALUE
 lockvar_alloc(VALUE klass)
 {
@@ -84,7 +76,7 @@ lockvar_initialize(int argc, VALUE *argv, VALUE self)
     VALUE init = Qnil;
     rb_check_frozen(self);   /* send(:initialize) again would write past the lock */
     rb_scan_args(argc, argv, "01", &init);
-    lockvar_check_shareable(init);
+    init = rs_shareable_value(init);
     lockvar_ptr(self)->value = init;
     /* Only the guarded slot changes, so the LockVar itself can be frozen and
      * shared; RUBY_TYPED_FROZEN_SHAREABLE is what permits it for a T_DATA. */
@@ -108,9 +100,8 @@ lockvar_update_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockvar *lv = lockvar_ptr(arg->self);
-    VALUE next = rb_yield(lv->value);   /* rs_guarded has marked the lock held */
+    VALUE next = rs_shareable_value(rb_yield(lv->value));   /* guard marked it held */
 
-    lockvar_check_shareable(next);
     lv->value = next;
     return next;
 }
@@ -121,9 +112,8 @@ lockvar_increment_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct lockvar *lv = lockvar_ptr(arg->self);
-    VALUE next = rb_funcall(lv->value, id_plus, 1, (VALUE)arg->data);
+    VALUE next = rs_shareable_value(rb_funcall(lv->value, id_plus, 1, (VALUE)arg->data));
 
-    lockvar_check_shareable(next);
     lv->value = next;
     return next;
 }
