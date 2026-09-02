@@ -180,29 +180,27 @@ hash, with `to_h` a snapshot no write can tear.
 scoreboard where each worker owns its row: hashes whose keys never change
 together. There the whole-hash lock above is paying for atomicity nobody asked
 for, with unrelated clients waiting in one queue. `KeyLockHash` locks per key,
-and the everyday shape is a cache:
+and the everyday shape is a tally per client:
 
 ```ruby
-cache = Ractor::KeyLockHash.new
+hits = Ractor::KeyLockHash.new
 
-readers = 4.times.map do
-  Ractor.new(cache) do |c|
-    renders = 0
-    100.times do |i|
-      c.update("page-#{i % 10}") {|html| html || (renders += 1; "<p>page #{i % 10}</p>") }
-    end
-    renders
+workers = 4.times.map do
+  Ractor.new(hits) do |h|
+    1_000.times {|i| h.update("client-#{i % 8}") {|n| (n || 0) + 1 } }
   end
 end
+workers.each(&:join)
 
-readers.sum(&:value) #=> 10
+hits["client-3"] #=> 500
 ```
 
-Four hundred fetches over ten pages, and the render ran exactly ten times:
-`update` holds that key's lock while the block runs, so simultaneous misses on
-one page render once and everyone else reads the result -- the cache stampede,
-absorbed by the shape itself -- while misses on different pages never meet.
-Check-and-claim is the same line with `:claimed` in it.
+Clients appear at runtime, requests for different clients never queue behind
+each other, and the block is one addition -- update blocks stay short here as
+everywhere in this family. Check-and-claim is the same line with `:claimed`
+in it, and a get-or-create cache is the same line with the computation in it;
+that one deliberately trades the short-block rule for stampede protection, and
+is worked through in [examples/](examples/README.md).
 
 
 **A mutable object: `ActiveObject`.** When freezing the state is not on the

@@ -106,6 +106,18 @@ one lock's queue again, 1173 ns per update. Measured on 16 cores, governor
 `performance`, ruby 4.1.0dev; `benchmark/family.rb` and its `ownkey`
 companion in the trials record produce these.
 
+## Keep the block short
+
+The family rule applies unchanged: the block holds that key's lock, so every
+other user of *that key* waits for it. Compute the new value and nothing more.
+
+The one deliberate exception is get-or-create caching, where holding the lock
+through the computation is the point -- it is what stops eight simultaneous
+misses computing eight times. That trades a blocked key for an absorbed
+stampede; make the trade knowingly, and see
+[examples/15_cache_backend.rb](../examples/15_cache_backend.rb) for it priced
+and tested.
+
 ## When something else fits better
 
 * Two keys that change together, or a consistent snapshot:
