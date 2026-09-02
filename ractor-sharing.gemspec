@@ -17,6 +17,7 @@ Gem::Specification.new do |spec|
   spec.extensions = %w[ext/ractor/tvar/extconf.rb ext/ractor/lock/extconf.rb]
 
   spec.metadata["source_code_uri"] = spec.homepage
-  spec.files = Dir["lib/**/*.rb", "ext/**/*.{c,h,rb}", "docs/*.md", "README.md", "LICENSE.txt"]
+  spec.files = Dir["lib/**/*.rb", "ext/**/*.{c,h,rb}", "docs/*.md",
+                   "examples/*.rb", "examples/README.md", "README.md", "LICENSE.txt"]
   spec.require_paths = ["lib"]
 end
