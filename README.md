@@ -181,27 +181,33 @@ hash, with `to_h` a snapshot no write can tear.
 scoreboard where each worker owns its row: hashes whose keys never change
 together. There the whole-hash lock above is paying for atomicity nobody asked
 for, with unrelated clients waiting in one queue. `KeyLockHash` locks per key,
-and the everyday shape is a tally per client:
+and the everyday shape is a get-or-create cache:
 
 ```ruby
-hits = Ractor::KeyLockHash.new
+cache = Ractor::KeyLockHash.new
 
-workers = 4.times.map do
-  Ractor.new(hits) do |h|
-    1_000.times {|i| h.update("client-#{i % 8}") {|n| (n || 0) + 1 } }
+readers = 4.times.map do
+  Ractor.new(cache) do |c|
+    renders = 0
+    100.times do |i|
+      c.update("page-#{i % 10}") {|html| html || (renders += 1; "<p>page #{i % 10}</p>") }
+    end
+    renders
   end
 end
-workers.each(&:join)
 
-hits["client-3"] #=> 500
+readers.sum(&:value) #=> 10
 ```
 
-Clients appear at runtime, requests for different clients never queue behind
-each other, and the block is one addition -- update blocks stay short here as
-everywhere in this family. Check-and-claim is the same line with `:claimed`
-in it, and a get-or-create cache is the same line with the computation in it;
-that one deliberately trades the short-block rule for stampede protection, and
-is worked through in [examples/](examples/README.md).
+Four hundred fetches over ten pages, and the render ran exactly ten times.
+`update` holds that key's lock while the block runs, so simultaneous misses on
+one page wait for the first -- and waiting is correct here, because everyone
+waiting would have rendered the same page themselves: the system does the work
+once instead of eight times, and a miss on a *different* page never queues at
+all. (That is the one shape where a long block is the right trade; the rule
+and its price are in [the docs](docs/keylockhash.md).) A per-client tally is
+`update(client) {|n| (n || 0) + 1 }`, and check-and-claim is the same line
+with `:claimed` in it.
 
 
 **A mutable object: `ActiveObject`.** When freezing the state is not on the
