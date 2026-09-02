@@ -75,37 +75,38 @@ class Service
   def initialize
     @mode   = Ractor::TVar.new(:maintenance)
     @notice = Ractor::TVar.new("closed for maintenance")
-    freeze                     # a TVar is already frozen, so the instance can be
+    Ractor.make_shareable(self)   # the TVars already are; this seals the shell
   end
 
   def open!  = Ractor.atomically { @mode.value = :open; @notice.value = "welcome!" }
   def status = Ractor.atomically { [@mode.value, @notice.value] }   # one snapshot
 end
 
-service = Service.new          # frozen, therefore shareable: pass it anywhere
+SERVICE = Service.new             # shareable, so a constant every Ractor can use
 
 watchers = 4.times.map do
-  Ractor.new(service) do |svc|
+  Ractor.new do
     mixed = 0
     10_000.times do
-      state, text = svc.status
+      state, text = SERVICE.status
       mixed += 1 if (state == :open) != (text == "welcome!")
     end
     mixed
   end
 end
 
-service.open!
+SERVICE.open!
 
 watchers.sum(&:value) #=> 0
 ```
 
 Forty thousand snapshots taken across the flip, and not one of them caught the
-mode and the notice disagreeing. And look at the class: an ordinary one,
-frozen, so the *instance* travels to any Ractor by reference -- the TVars are
-where the change lives. Its methods run in whichever Ractor calls them: no
-owner, no message, no round trip. That is the pattern to reach for before
-`ActiveObject` below, which exists for state that cannot be frozen at all.
+mode and the notice disagreeing. And look at the class: an ordinary one that
+makes itself shareable in its own `initialize`, so the instance lives in a
+constant and every Ractor just uses it -- the TVars are where the change
+lives. Its methods run in whichever Ractor calls them: no owner, no message,
+no round trip. That is the pattern to reach for before `ActiveObject` below,
+which exists for state that cannot be frozen at all.
 
 The one thing to hold on to: a transaction that loses a race is **rolled back and
 run again**, so its block has to be safe to run twice. Keep it to reading and

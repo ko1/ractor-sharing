@@ -98,16 +98,16 @@ transaction otherwise.
 ## A shareable class with TVar slots
 
 A TVar is frozen and shareable; only the value inside it moves. So a class
-whose mutable state lives in TVars can `freeze` its instances, and a frozen
-instance whose ivars are all shareable is itself shareable -- it crosses to any
-Ractor **by reference**, methods included:
+whose mutable state lives in TVars can make its own instances shareable, and a
+shareable instance crosses to any Ractor **by reference**, methods included --
+or simply lives in a constant that every Ractor uses:
 
 ```ruby
 class Account
   def initialize(balance)
     @balance = Ractor::TVar.new(balance)
     @history = Ractor::TVar.new([])
-    freeze
+    Ractor.make_shareable(self)   # fails loudly if an ivar could not travel
   end
 
   def deposit(amount)
