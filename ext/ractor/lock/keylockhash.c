@@ -38,10 +38,22 @@ struct keylockhash {
     struct klh_shard shards[KLH_NSHARDS];
 };
 
+/* An immediate (Symbol, Integer-as-Fixnum, nil/true/false, flonum) is its own
+ * VALUE and eql? only to the identical VALUE, so it can be its own hash and
+ * skip rb_hash -- which perf put at ~6%% of an update.  Anything else (a String
+ * key, a frozen object) must go through rb_hash: two eql values are different
+ * VALUEs and have to hash alike. */
+static inline st_index_t
+klh_hash(VALUE key)
+{
+    if (SPECIAL_CONST_P(key)) return (st_index_t)key;
+    return (st_index_t)NUM2LONG(rb_hash(key));
+}
+
 static st_index_t
 klh_key_hash(st_data_t key)
 {
-    return (st_index_t)NUM2LONG(rb_hash((VALUE)key));
+    return klh_hash((VALUE)key);
 }
 
 static int
@@ -115,8 +127,7 @@ klh_check_shareable(VALUE val)
 static struct klh_shard *
 klh_shard_for(VALUE self, VALUE key)
 {
-    unsigned long h = (unsigned long)NUM2LONG(rb_hash(key));
-    return &klh_ptr(self)->shards[h % KLH_NSHARDS];
+    return &klh_ptr(self)->shards[klh_hash(key) % KLH_NSHARDS];
 }
 
 static VALUE
