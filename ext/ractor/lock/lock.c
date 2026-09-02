@@ -182,16 +182,22 @@ rs_lock_release(struct rs_lock *lk)
 
 /* --- held marker / guarded ------------------------------------------------ */
 
+/* The "which lock am I inside" marker is per Ruby thread, kept in fiber-local
+ * storage rather than an ivar on the Thread object: a Thread stores ivars in a
+ * generic table (a hash lookup each time), and this is read once and written
+ * twice on every guarded call.  It must not be native-thread-local -- the M:N
+ * scheduler moves fibers across native threads, and a block that blocks would
+ * then read another fiber's marker. */
 VALUE
 rs_held(VALUE thread)
 {
-    return rb_attr_get(thread, id_held);
+    return rb_thread_local_aref(thread, id_held);
 }
 
 void
 rs_held_set(VALUE thread, VALUE obj)
 {
-    rb_ivar_set(thread, id_held, obj);
+    rb_thread_local_aset(thread, id_held, obj);
 }
 
 static VALUE
@@ -202,9 +208,10 @@ rs_restore_held(VALUE ptr)
     return Qnil;
 }
 
-/* The marker lives in an ivar on the Thread, so restoring it runs Ruby-visible
- * code and can raise -- a frozen Thread does.  Raising here used to skip the
- * release below and strand the lock for the life of the process. */
+/* Restoring the marker runs Ruby-visible code that can raise -- a frozen Thread
+ * makes even the fiber-local store raise FrozenError -- so it is protected, and
+ * the release runs whether or not it did.  Skipping the release once stranded
+ * the lock for the life of the process. */
 static VALUE
 rs_guard_ensure(VALUE ptr)
 {
