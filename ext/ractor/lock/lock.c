@@ -285,4 +285,5 @@ Init_lock(void)
     rs_lock_init_class();
     Init_lockvar_class();
     Init_lockhash_class();
+    Init_keylockhash_class();
 }

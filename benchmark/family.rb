@@ -93,6 +93,12 @@ SUBJECTS = [
     write: Ractor.shareable_proc { |o| o.synchronize(&BUMP_HASH) },
     seq:   Ractor.shareable_proc { |o| o[:rec][:seq] } },
 
+  { label: "KeyLockHash", per: FAST, make: -> { Ractor::KeyLockHash.new(rec: REC) },
+    read:  Ractor.shareable_proc { |o| o[:rec][:seq] },
+    write: Ractor.shareable_proc { |o|
+             o.update(:rec) { |v| { status: v[:status], seq: v[:seq] + 1 }.freeze } },
+    seq:   Ractor.shareable_proc { |o| o[:rec][:seq] } },
+
   { label: "ActorHash#call", per: SLOW, make: -> { Ractor::ActorHash.new(rec: REC) },
     read:  Ractor.shareable_proc { |o| o[:rec][:seq] },
     write: Ractor.shareable_proc { |o| o.call(&BUMP_HASH) },

@@ -16,6 +16,9 @@ What each one is, in a line:
   update waits for its turn, and then its block runs exactly once.
 * **[`Ractor::LockHash`](docs/lockhash.md)** is a hash behind one lock. A
   `synchronize` section is atomic across the keys of that hash, and only those.
+* **[`Ractor::KeyLockHash`](docs/keylockhash.md)** is a hash with a lock per
+  key: the row lock to LockHash's table lock. Updates to unrelated keys run in
+  parallel, and nothing is atomic across two keys.
 * **[`Ractor::ActiveObject`](docs/active_object.md)** is an object that lives in
   a Ractor of its own. It never leaves; callers send it method calls, and the
   owner runs them one at a time.
@@ -31,6 +34,7 @@ off it only for a reason the others below name.
 | [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 68 ns | 351 ns |
 | [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 74 ns | 352 ns |
 | [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | the same, but the keys are not known in advance | 132 ns | 433 ns |
+| [`Ractor::KeyLockHash`](docs/keylockhash.md)<br>`m.update(k) {\|v\| v + 1 }` | the keys are independent: buckets, caches, idempotency claims. Parallel across keys | — | — |
 | [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.3 µs | 2.8 µs |
 | [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.2 µs | 3.2 µs |
 

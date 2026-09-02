@@ -130,8 +130,9 @@ written; the lock is released, nothing more.
 
 One lock covers the whole hash, so **writes to unrelated keys wait for each
 other**, and a snapshot is O(n). A hash written to constantly is better modelled
-as one [`Ractor::LockVar`](lockvar.md) per key, which scales with the cores.
-That is open to you whenever you never need two keys to change together.
+as one lock per key -- [`Ractor::KeyLockHash`](keylockhash.md), the row lock to
+this class's table lock -- which scales with the cores. That is open to you
+whenever you never need two keys to change together.
 
 **Reads take the lock too, so they do not scale either.** Sixteen Ractors reading
 one shared LockHash cost 489 ns per read, against 23 ns when each has a hash of

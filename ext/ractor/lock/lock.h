@@ -55,5 +55,6 @@ extern VALUE rb_eRactorNestedLock;
 void rs_lock_init_class(void);
 void Init_lockvar_class(void);
 void Init_lockhash_class(void);
+void Init_keylockhash_class(void);
 
 #endif
