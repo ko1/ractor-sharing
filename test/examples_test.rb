@@ -9,7 +9,7 @@ class ExamplesTest < Test::Unit::TestCase
 
   Dir[File.join(ROOT, "examples", "*.rb")].sort.each do |path|
     define_method("test_#{File.basename(path, '.rb')}") do
-      out = IO.popen([RbConfig.ruby, "-I#{File.join(ROOT, 'lib')}", path],
+      out = IO.popen(["timeout", "30", RbConfig.ruby, "-I#{File.join(ROOT, 'lib')}", path],
                      err: %i[child out], &:read)
       assert_true $?.success?, "#{File.basename(path)} failed:\n#{out}"
       assert_match(/^ok:/, out, "#{File.basename(path)} printed no ok line:\n#{out}")

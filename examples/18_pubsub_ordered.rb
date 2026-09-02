@@ -24,6 +24,10 @@ class OrderedPubSub < Ractor::ActiveObject
   async def publish(topic, message)      # fire and forget; the owner serializes
     (@topics[topic] || []).each { |port| port << message }
   end
+
+  # sync, so when this returns you are out: the owner has passed the point, and
+  # no later publish includes you. (Messages it already sent are in your port.)
+  sync def unsubscribe(topic, port) = ((@topics[topic] || []).delete(port); nil)
 end
 
 BUS = OrderedPubSub.new
@@ -52,5 +56,18 @@ abort "subscribers saw DIFFERENT orders" unless feeds.uniq.size == 1
   seq = feeds.first.grep(/\A#{name}/)
   abort "#{name}'s own order broken" unless seq == 20.times.map { "#{name}-#{_1}" }
 end
+# Unsubscribe is exact, because the owner serializes: a publish sent after it
+# returns cannot reach the port, and one sent after resubscribing must.
+# (A fresh topic: the ticker subscribers above have exited, and this broker is
+# deliberately too simple to prune their closed ports.)
+probe = Ractor::Port.new
+BUS.subscribe("probe", probe)
+BUS.unsubscribe("probe", probe)
+BUS.publish("probe", "missed")
+BUS.subscribe("probe", probe)
+BUS.publish("probe", "caught")
+abort "unsubscribe leaked a message" unless probe.receive == "caught"
+
 puts "ok: two publishers raced 40 messages; all three subscribers saw the " \
-     "identical sequence -- the total order one owner buys"
+     "identical sequence, and unsubscribe cuts the feed exactly where the " \
+     "owner's order says"

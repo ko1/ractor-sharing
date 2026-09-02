@@ -35,6 +35,11 @@ class PubSub
     port
   end
 
+  # Leaving politely, while alive: the lazy pruning below only notices death.
+  def unsubscribe(topic, port)
+    @topics.update(topic) {|ports| (ports || []) - [port] }
+  end
+
   def publish(topic, message)
     dead = nil
     delivered = 0
@@ -66,17 +71,24 @@ end
 
 BUS = PubSub.new
 
-listeners = 3.times.map do |i|
+listeners = 4.times.map do |i|
   Ractor.new(BUS, i) do |bus, id|
     port = bus.subscribe("deploys", Ractor::Port.new)
-    port.receive if id == 2                  # this one leaves after a single message
-    id == 2 ? [:left_early] : 3.times.map { port.receive }
+    case id
+    when 2 then (port.receive; [:died])      # exits; its closed port gets pruned
+    when 3                                   # listens once, then leaves politely
+      msg = port.receive
+      bus.unsubscribe("deploys", port)
+      [:unsubscribed, msg]
+    else 3.times.map { port.receive }
+    end
   end
 end
 sleep 0.05                                   # let the subscriptions land
 
 first = BUS.publish("deploys", "v1 is live")
-abort "expected 3 deliveries, got #{first}" unless first == 3
+abort "expected 4 deliveries, got #{first}" unless first == 4
+abort "polite leaver broke" unless listeners[3].value == [:unsubscribed, "v1 is live"]
 listeners[2].value                           # subscriber 2 exits; its port closes
 
 rest = 2.times.map { |n| BUS.publish("deploys", "v#{n + 2} is live") }
@@ -88,5 +100,5 @@ abort "port list wrong" unless deploy_ports.size == 2 && deploy_ports.frozen? &&
                                deploy_ports.all?(Ractor::Port)
 BUS.subscribe("alerts", Ractor::Port.new)
 abort "channel list wrong: #{BUS.channels}" unless BUS.channels.sort == %w[alerts deploys]
-puts "ok: 3 published, #{[first, *rest].join('+')} delivered; the one that left was " \
-     "pruned on the next publish, and both stayers heard every message in order"
+puts "ok: 3 published, #{[first, *rest].join('+')} delivered; one leaver pruned, " \
+     "one unsubscribed politely, and both stayers heard every message in order"
