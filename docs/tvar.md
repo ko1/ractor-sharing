@@ -95,6 +95,43 @@ transaction otherwise.
 * State you do not want to freeze, a mutable object updated in place:
   [`Ractor::ActorHash`](actor_hash.md) or [`Ractor::ActiveObject`](active_object.md).
 
+## A shareable class with TVar slots
+
+A TVar is frozen and shareable; only the value inside it moves. So a class
+whose mutable state lives in TVars can `freeze` its instances, and a frozen
+instance whose ivars are all shareable is itself shareable -- it crosses to any
+Ractor **by reference**, methods included:
+
+```ruby
+class Account
+  def initialize(balance)
+    @balance = Ractor::TVar.new(balance)
+    @history = Ractor::TVar.new([])
+    freeze
+  end
+
+  def deposit(amount)
+    Ractor.atomically do
+      @balance.value += amount
+      @history.value += [amount]
+    end
+  end
+
+  def balance = @balance.value
+end
+
+acc = Account.new(100)
+Ractor.new(acc) { |a| a.deposit(25) }.join
+acc.balance #=> 125
+```
+
+The methods run in whichever Ractor calls them -- there is no owner and no
+message round trip -- and the transactions they declare are the whole
+synchronization. This is the pattern to exhaust before reaching for
+[`Ractor::ActiveObject`](active_object.md): an active object earns its Ractor
+and its ~2.5 µs per call when the state genuinely cannot be frozen, not when a
+few slots of it change.
+
 ## Scaling
 
 **Reads outside a transaction cost nothing and scale.** Sixteen Ractors reading

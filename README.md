@@ -71,28 +71,41 @@ deadlock, and under genuine contention it is the quickest thing
 here, because losing a race and retrying beats parking a thread.
 
 ```ruby
-mode   = Ractor::TVar.new(:maintenance)
-notice = Ractor::TVar.new("closed for maintenance")
+class Service
+  def initialize
+    @mode   = Ractor::TVar.new(:maintenance)
+    @notice = Ractor::TVar.new("closed for maintenance")
+    freeze                     # a TVar is already frozen, so the instance can be
+  end
+
+  def open!  = Ractor.atomically { @mode.value = :open; @notice.value = "welcome!" }
+  def status = Ractor.atomically { [@mode.value, @notice.value] }   # one snapshot
+end
+
+service = Service.new          # frozen, therefore shareable: pass it anywhere
 
 watchers = 4.times.map do
-  Ractor.new(mode, notice) do |m, n|
+  Ractor.new(service) do |svc|
     mixed = 0
     10_000.times do
-      state, text = Ractor.atomically { [m.value, n.value] }   # one snapshot
+      state, text = svc.status
       mixed += 1 if (state == :open) != (text == "welcome!")
     end
     mixed
   end
 end
 
-Ractor.atomically { mode.value = :open; notice.value = "welcome!" }
+service.open!
 
 watchers.sum(&:value) #=> 0
 ```
 
 Forty thousand snapshots taken across the flip, and not one of them caught the
-mode and the notice disagreeing. Note the read side: seeing several TVars
-consistently is also one `atomically`.
+mode and the notice disagreeing. And look at the class: an ordinary one,
+frozen, so the *instance* travels to any Ractor by reference -- the TVars are
+where the change lives. Its methods run in whichever Ractor calls them: no
+owner, no message, no round trip. That is the pattern to reach for before
+`ActiveObject` below, which exists for state that cannot be frozen at all.
 
 The one thing to hold on to: a transaction that loses a race is **rolled back and
 run again**, so its block has to be safe to run twice. Keep it to reading and
