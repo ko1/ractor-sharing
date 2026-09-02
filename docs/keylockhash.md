@@ -77,7 +77,10 @@ Lock striping: keys hash onto 64 shards, each a table behind a
 [lock of its own](lockvar.md#implementation-notes), so two keys occasionally
 share one. Databases would call the finer design a bucket **latch** plus a row
 **lock**; if shard collisions ever show up in a profile, that is the upgrade
-path, and the API would not change.
+path, and the API would not change. One thing databases bundle with their row
+locks stays unbundled here: a transaction manager. They can let one
+transaction take many row locks because a deadlock detector cleans up the
+cycles; this class refuses the second lock at the door instead.
 
 A key's own `#hash` or `#eql?` that reaches back into the same map raises
 `NestedLockError` rather than deadlocking or being let in: the inner call may

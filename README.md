@@ -230,6 +230,24 @@ refused, with a message pointing here: that is the sign you wanted a `TVar`.
 Finding yourself freezing a copy of a collection on every update is the sign you
 wanted an `ActiveObject`.
 
+### In database terms
+
+If you think in database vocabulary, the first four unbundle what a database
+ships as one engine:
+
+| in a database | here |
+|---|---|
+| an MVCC read, taking no lock | `TVar#value` outside a transaction |
+| a serializable transaction, retried on conflict | `Ractor.atomically` |
+| a row lock | `KeyLockHash` -- sold separately: no transaction spans two of them |
+| a table lock | `LockHash#synchronize` |
+| the deadlock detector | not shipped: a second lock raises `Ractor::NestedLockError` at the door |
+
+Databases can default to row locks because a transaction manager acquires many
+of them and a deadlock detector cleans up when that cycles. There is no
+detector here, so the second lock is refused instead, and work that spans keys
+goes to the table lock or to the transactions.
+
 
 ## Performance
 
