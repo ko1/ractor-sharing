@@ -72,8 +72,18 @@ here, because losing a race and retrying beats parking a thread.
 
 ```ruby
 from, to = Ractor::TVar.new(100), Ractor::TVar.new(0)
-Ractor.atomically { from.value -= 10; to.value += 10 }
+
+movers = 4.times.map do
+  Ractor.new(from, to) do |a, b|
+    25.times { Ractor.atomically { a.value -= 1; b.value += 1 } }
+  end
+end
+movers.each(&:join)
+
+[from.value, to.value] #=> [0, 100]
 ```
+
+A hundred races, and nobody ever saw the money in neither account.
 
 The one thing to hold on to: a transaction that loses a race is **rolled back and
 run again**, so its block has to be safe to run twice. Keep it to reading and
@@ -95,10 +105,22 @@ waiting for a turn beats retrying. One shareable value, and the
 block runs once by construction.
 
 ```ruby
-release = Ractor::LockVar.new({ version: "v1", by: nil })
-release.update {|r| { version: "v2", by: :deploy_bot } }  # announce here: it runs once
-release.value #=> {version: "v2", by: :deploy_bot}
+lock = Ractor::LockVar.new(nil)
+
+claims = %w[ann ben cho dee].map do |name|
+  Ractor.new(lock, name) do |lv, me|
+    won = false
+    lv.update {|holder| holder || (won = true; me) }  # announce here: it runs once
+    won
+  end
+end
+
+claims.map(&:value).count(true) #=> 1
 ```
+
+Four Ractors race to take the deploy lock; each block runs exactly once, so
+exactly one of them believes it won -- with a `TVar` the losing blocks would
+have run again, and a side effect in them with it.
 
 **The same, for a hash: `LockHash`.** A registry, a cache, a scoreboard each
 worker writes a row of, where the keys are not known in advance. Reads need no
@@ -106,10 +128,21 @@ ceremony; writes go inside `synchronize`, and everything one section changes
 appears at once. Atomic across its own keys, and only those.
 
 ```ruby
-board = Ractor::LockHash.new
-board.synchronize {|b| b[:worker_1] = "tests passed"; b[:green] = true }
-board.to_h #=> {worker_1: "tests passed", green: true}
+board = Ractor::LockHash.new(done: 0)
+
+rs = 4.times.map do |i|
+  Ractor.new(board, i) do |b, id|
+    b.synchronize {|h| h["worker_#{id}"] = "passed"; h[:done] += 1 }
+  end
+end
+rs.each(&:join)
+
+board.to_h[:done] #=> 4
 ```
+
+Each section writes its own row **and** bumps the shared tally; because both
+happen under one `synchronize`, no snapshot ever counts a row twice or misses
+one.
 
 **Independent keys, in parallel: `KeyLockHash`.** When no two keys ever need to
 change together, the whole-hash lock above is paying for atomicity nobody asked
@@ -117,11 +150,21 @@ for: unrelated clients wait in one queue. `KeyLockHash` locks per key, so they
 do not, and `update` makes the check-and-claim shapes one line:
 
 ```ruby
-seen = Ractor::KeyLockHash.new
-mine = false
-seen.update("req-1") {|v| v || (mine = true; :claimed) }
-mine #=> true
+jobs = Ractor::KeyLockHash.new
+
+winners = 4.times.map do
+  Ractor.new(jobs) do |m|
+    won = false
+    m.update("job-7") {|v| v || (won = true; :claimed) }  # put-if-absent, per key
+    won
+  end
+end
+
+winners.map(&:value).count(true) #=> 1
 ```
+
+Four Ractors race for one job id and exactly one claims it, while claims on
+other ids would not have waited for this one at all.
 
 
 **A mutable object: `ActiveObject`.** When freezing the state is not on the
@@ -142,10 +185,20 @@ shareable value, one of the first three will cost you far less.
 ```ruby
 class People < Ractor::ActiveObject
   def initialize = @db = {}
-  async def add(name, age) = @db[name] = age
-  sync  def find(name) = @db[name]
+  async def add(name, age) = @db[name] = age   # fire and forget
+  sync  def find(name) = @db[name]             # a question: waits for the answer
 end
+
+people = People.new
+people.add("ada", 36)
+people.add("lin", 28)
+
+people.find("ada") #=> 36
+Ractor.new(people) {|p| p.find("lin") }.value #=> 28
 ```
+
+`People.new` returns a shareable proxy: hand it to any Ractor and the calls
+all funnel to the one owner, where `@db` stays an ordinary mutable Hash.
 
 **A hash whose values will not be frozen: `ActorHash`.** Same shape as
 `LockHash`, but the entries live in a Ractor of its own, so they can be anything
@@ -154,10 +207,21 @@ changes are work you send, and you need not wait for them.
 
 ```ruby
 h = Ractor::ActorHash.new
-h.increment(:hits)
-h.async_call {|h| (h[:log] ||= []) << "a line" }
-h[:log]
+
+loggers = 3.times.map do |i|
+  Ractor.new(h, i) do |hash, id|
+    hash.increment(:hits)
+    hash.async_call(id) {|x, me| (x[:log] ||= []) << me }   # mutated in place, over there
+  end
+end
+loggers.each(&:join)
+
+h[:hits] #=> 3
+h.call {|x| x[:log].sort } #=> [0, 1, 2]
 ```
+
+The log is a plain mutable Array that never leaves the owner; the blocks go to
+it, not the other way around.
 
 Two signs you picked the wrong one. Reaching for two `LockVar`s at once is
 refused, with a message pointing here: that is the sign you wanted a `TVar`.
