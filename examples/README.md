@@ -26,6 +26,7 @@ Two of them are small applications rather than single tricks:
 |---|---|---|
 | [11_webshop.rb](11_webshop.rb) | `TVar` + `LockHash` + `ActiveObject` | a shop: carts reserved all-or-nothing, a mid-run sale, books that always balance, an audit log |
 | [12_kvstore_wal.rb](12_kvstore_wal.rb) | `ActiveObject` | a crash-safe KV store: write-ahead log on disk, crash, replay, identical state |
+| [13_buffered_logger.rb](13_buffered_logger.rb) | `ActiveObject` | a batching file logger: buffer, high-water mark and flush clock are just ivars |
 
 The [test suite](../test/examples_test.rb) runs every one of them, so they
 cannot rot.
