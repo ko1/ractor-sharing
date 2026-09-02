@@ -43,6 +43,13 @@ class PubSub
   end
 
   def subscribers(topic) = (@topics[topic] || []).size
+
+  # The channel list is the key list: a copy, consistent per key. A topic whose
+  # last subscriber died lingers as topic => [] -- removing the key the moment
+  # it empties would take two acquisitions (see the emptiness, then delete),
+  # and a new subscriber can land in between. Per-key locking cannot say
+  # "delete if still empty" atomically; filtering the listing can.
+  def channels = @topics.keys.select {|t| (@topics[t] || []).any? }
 end
 
 BUS = PubSub.new
@@ -64,5 +71,7 @@ rest = 2.times.map { |n| BUS.publish("deploys", "v#{n + 2} is live") }
 heard = listeners[0..1].map(&:value)
 abort "a live subscriber missed a message: #{heard}" unless heard.all? { |h| h == ["v1 is live", "v2 is live", "v3 is live"] }
 abort "the dead subscriber was not pruned" unless BUS.subscribers("deploys") == 2
+BUS.subscribe("alerts", Ractor::Port.new)
+abort "channel list wrong: #{BUS.channels}" unless BUS.channels.sort == %w[alerts deploys]
 puts "ok: 3 published, #{[first, *rest].join('+')} delivered; the one that left was " \
      "pruned on the next publish, and both stayers heard every message in order"
