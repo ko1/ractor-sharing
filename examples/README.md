@@ -20,5 +20,12 @@ ruby -Ilib examples/01_bank_transfer.rb
 | [09_audit_log.rb](09_audit_log.rb) | `ActiveObject` | fire-and-forget logging with `async`, strictly ordered by the owner |
 | [10_price_quotes.rb](10_price_quotes.rb) | `ActiveObject` | fan out `future` calls, gather the answers later |
 
+Two of them are small applications rather than single tricks:
+
+| file | classes | the application |
+|---|---|---|
+| [11_webshop.rb](11_webshop.rb) | `TVar` + `LockHash` + `ActiveObject` | a shop: carts reserved all-or-nothing, a mid-run sale, books that always balance, an audit log |
+| [12_kvstore_wal.rb](12_kvstore_wal.rb) | `ActiveObject` | a crash-safe KV store: write-ahead log on disk, crash, replay, identical state |
+
 The [test suite](../test/examples_test.rb) runs every one of them, so they
 cannot rot.
