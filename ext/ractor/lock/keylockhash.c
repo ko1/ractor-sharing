@@ -1,6 +1,6 @@
 #include "lock.h"
 #include "ruby/st.h"
-#include "rcuhash.h"
+#include "oatable.h"
 
 /* Ractor::KeyLockHash - a hash with one lock per key, near enough.
  *
@@ -10,10 +10,12 @@
  * to unrelated keys run in parallel.  Nothing here is atomic across two keys;
  * that is LockHash's job (or Ractor::TVar's).
  *
- * "Near enough": the implementation is sharded, the textbook name is lock
- * striping.  Keys hash onto a fixed number of shards, each a table with a lock
- * of its own, so two keys sometimes share a lock.  That costs a collision now
- * and then and buys freedom from per-entry lock lifetime problems.
+ * "Near enough": entries live in one open-addressed table, and a value is one
+ * VALUE in a slot, so a read is a probe of a flat array and an update is a
+ * single atomic word.  Neither takes a lock: reads scale, and so do updates to
+ * different keys.  The lock is left for what genuinely needs one writer --
+ * inserting a key, growing the table, and #update, whose block must run
+ * exactly once and so cannot be retried.
  *
  * A plain write is []=, with no ceremony: one key's write is atomic on its
  * own.  #update exists for one reason only, computing the new value from the
@@ -25,19 +27,21 @@
  *     m.update(id) {|v| v ? v : (mine = true; :claimed) }
  */
 
-#define KLH_NSHARDS 64
-
 static VALUE rb_cRactorKeyLockHash;
 static ID id_plus;
 
-struct klh_shard {
-    struct rcu_shard rcu;       /* lock-free readable; writers hold lock */
-    struct rs_lock lock;        /* writer mutex + guard for the block methods */
+struct keylockhash {
+    VALUE table;            /* an oa_table object, atomically published */
+    struct rs_lock lock;    /* inserts, growth, and the block methods */
 };
 
-struct keylockhash {
-    struct klh_shard shards[KLH_NSHARDS];
-};
+/* The table a reader should probe.  Held in a local so the object stays
+ * reachable even if a writer publishes a new one mid-operation. */
+static inline VALUE
+klh_table(struct keylockhash *kh)
+{
+    return OA_LOAD_ACQ(kh->table);
+}
 
 /* An immediate (Symbol, Integer-as-Fixnum, nil/true/false, flonum) is its own
  * VALUE and eql? only to the identical VALUE, so it can be its own hash and
@@ -51,31 +55,28 @@ klh_hash(VALUE key)
     return (st_index_t)NUM2LONG(rb_hash(key));
 }
 
+/* Marking the table object is the whole of it: growing publishes a new table
+ * and drops the old, which the ordinary GC then frees.  Nothing is retired by
+ * hand and nothing is freed from inside a mark. */
 static void
 klh_mark(void *ptr)
 {
     struct keylockhash *kh = ptr;
-    for (int i = 0; i < KLH_NSHARDS; i++) rcu_shard_mark(&kh->shards[i].rcu);
+    if (kh->table) rb_gc_mark(kh->table);
 }
 
 static void
 klh_free(void *ptr)
 {
     struct keylockhash *kh = ptr;
-    for (int i = 0; i < KLH_NSHARDS; i++) {
-        rcu_shard_destroy(&kh->shards[i].rcu);
-        rs_lock_destroy(&kh->shards[i].lock);
-    }
+    rs_lock_destroy(&kh->lock);
     ruby_xfree(kh);
 }
 
 static size_t
 klh_memsize(const void *ptr)
 {
-    const struct keylockhash *kh = ptr;
-    size_t n = sizeof(struct keylockhash);
-    for (int i = 0; i < KLH_NSHARDS; i++) n += rcu_shard_memsize(&kh->shards[i].rcu);
-    return n;
+    return sizeof(struct keylockhash);
 }
 
 static const rb_data_type_t klh_data_type = {
@@ -105,11 +106,30 @@ klh_alloc(VALUE klass)
 {
     struct keylockhash *kh;
     VALUE obj = TypedData_Make_Struct(klass, struct keylockhash, &klh_data_type, kh);
-    for (int i = 0; i < KLH_NSHARDS; i++) {
-        rcu_shard_init(&kh->shards[i].rcu);
-        rs_lock_init(&kh->shards[i].lock);
-    }
+    kh->table = Qfalse;                  /* markable while the table is built */
+    rs_lock_init(&kh->lock);
+    OA_STORE_REL(kh->table, oa_table_new(0));
     return obj;
+}
+
+/* Inserting or growing needs one writer: the caller holds the lock (or nobody
+ * else can see the map yet).  Growing builds a new table and publishes it; the
+ * old one is simply dropped, and the GC frees it like any other object. */
+static void
+klh_insert_locked(struct keylockhash *kh, st_index_t hash, VALUE key, VALUE value)
+{
+    struct oa_table *t = oa_table_ptr(kh->table);
+
+    if (oa_needs_grow(t)) {
+        VALUE grown = oa_table_grow(t, t->nslots * 2);
+        OA_STORE_REL(kh->table, grown);   /* publish */
+        t = oa_table_ptr(grown);
+    }
+    if (RB_UNLIKELY(!oa_insert(t, hash, key, value))) {
+        VALUE grown = oa_table_grow(t, t->nslots * 2);   /* probe run too long */
+        OA_STORE_REL(kh->table, grown);
+        oa_insert(oa_table_ptr(grown), hash, key, value);
+    }
 }
 
 static int
@@ -121,7 +141,7 @@ klh_copy_pair(VALUE key, VALUE value, VALUE selfv)
     value = rs_shareable_value(value);
     h = klh_hash(key);
     /* single-threaded: nobody else has seen self yet */
-    rcu_insert(&klh_ptr((VALUE)selfv)->shards[h % KLH_NSHARDS].rcu, h, key, value);
+    klh_insert_locked(klh_ptr((VALUE)selfv), h, key, value);
     return ST_CONTINUE;
 }
 
@@ -143,18 +163,21 @@ klh_initialize(int argc, VALUE *argv, VALUE self)
 /* --- guarded bodies ------------------------------------------------------- */
 
 struct klh_op {
-    struct klh_shard *shard;
+    struct keylockhash *kh;
     st_index_t hash;
     VALUE key;
     VALUE value;
+    VALUE table;            /* keeps the table alive while a block runs */
+    struct oa_slot *slot;
 };
 
-/* Fills shard + hash for +key+; hash is computed once. */
+/* Fills the map + hash for +key+; hash is computed once. */
 static struct klh_op
 klh_op_make(VALUE self, VALUE key, VALUE value)
 {
     st_index_t h = klh_hash(key);
-    struct klh_op op = { &klh_ptr(self)->shards[h % KLH_NSHARDS], h, key, value };
+    struct keylockhash *kh = klh_ptr(self);
+    struct klh_op op = { kh, h, key, value, klh_table(kh), NULL };
     return op;
 }
 
@@ -163,7 +186,7 @@ klh_lookup_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    return rcu_get(&op->shard->rcu, op->hash, op->key);
+    return oa_get(oa_table_ptr(klh_table(op->kh)), op->hash, op->key);
 }
 
 /* store_if_absent: return the value if the key is set, otherwise the block runs
@@ -174,13 +197,45 @@ klh_store_if_absent_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    VALUE found = rcu_get(&op->shard->rcu, op->hash, op->key);
+    VALUE found = oa_get(oa_table_ptr(op->table = klh_table(op->kh)), op->hash, op->key);
     VALUE computed;
 
-    if (!RB_UNDEF_P(found)) return found;
+    /* nil counts as absent, like #[] and #update: a real cached value is
+     * non-nil, so a nil (missing, or stored nil) means "compute". */
+    if (!RB_UNDEF_P(found) && !NIL_P(found)) return found;
     computed = rs_shareable_value(rb_yield(op->key));
-    rcu_insert(&op->shard->rcu, op->hash, op->key, computed);
+    if (NIL_P(computed)) return Qnil;   /* don't cache a nil result */
+    klh_insert_locked(op->kh, op->hash, op->key, computed);
     return computed;
+}
+
+/* The block runs exactly once, and it is still a compare-and-swap that makes
+ * that safe against a lock-free increment: the swap *claims* the slot before
+ * the block runs, and it is the claim that is retried, never the block.  Once
+ * claimed, the slot is this thread's until it commits, and a writer that finds
+ * the claim marker simply backs off. */
+static VALUE
+klh_update_yield(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+    struct klh_op *op = arg->data;
+    VALUE next = rs_shareable_value(rb_yield(op->value));
+
+    oa_commit(oa_table_ptr(op->table), op->hash, op->key, op->slot, next);
+    op->slot = NULL;            /* committed: the ensure has nothing to undo */
+    return next;
+}
+
+static VALUE
+klh_update_unclaim(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+    struct klh_op *op = arg->data;
+
+    if (op->slot) {
+        oa_unclaim(oa_table_ptr(op->table), op->hash, op->key, op->slot, op->value);
+    }
+    return Qnil;
 }
 
 static VALUE
@@ -188,11 +243,29 @@ klh_update_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    VALUE found = rcu_get(&op->shard->rcu, op->hash, op->key);
-    VALUE old = RB_UNDEF_P(found) ? Qnil : found;
-    VALUE next = rs_shareable_value(rb_yield(old));
-    rcu_insert(&op->shard->rcu, op->hash, op->key, next);
-    return next;
+
+    for (;;) {
+        struct oa_slot *s;
+        VALUE old, next;
+
+        op->table = klh_table(op->kh);
+        s = oa_find(oa_table_ptr(op->table), op->hash, op->key);
+        if (s) {
+            old = oa_slot_value(s);
+            if (old == oa_moved || old == oa_locked) continue;   /* carried, or busy */
+            if (!RB_UNDEF_P(old)) {
+                if (old == oa_locked) { rb_thread_schedule(); continue; }
+                if (!oa_try_claim(s, old)) continue;   /* changed first: claim again */
+                op->slot = s;
+                op->value = old;
+                return rb_ensure(klh_update_yield, ptr, klh_update_unclaim, ptr);
+            }
+        }
+        /* Absent: no other writer can introduce it while we hold the lock. */
+        next = rs_shareable_value(rb_yield(Qnil));
+        klh_insert_locked(op->kh, op->hash, op->key, next);
+        return next;
+    }
 }
 
 /* (old or 0) + amount, stored under the key's lock.  A missing key counts as
@@ -203,14 +276,27 @@ klh_increment_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    VALUE found = rcu_get(&op->shard->rcu, op->hash, op->key);
-    VALUE old = RB_UNDEF_P(found) ? INT2FIX(0) : found;
-    VALUE next = rs_fixnum_add(old, op->value);
-    if (RB_UNDEF_P(next)) {
-        next = rs_shareable_value(rb_funcall(old, id_plus, 1, op->value));
+    for (;;) {
+        struct oa_slot *s;
+        VALUE old, next;
+
+        op->table = klh_table(op->kh);
+        s = oa_find(oa_table_ptr(op->table), op->hash, op->key);
+        old = s ? oa_slot_value(s) : Qundef;
+        if (old == oa_moved || old == oa_locked) continue;
+
+        next = rs_fixnum_add(RB_UNDEF_P(old) ? INT2FIX(0) : old, op->value);
+        if (RB_UNDEF_P(next)) {
+            next = rs_shareable_value(rb_funcall(RB_UNDEF_P(old) ? INT2FIX(0) : old,
+                                                 id_plus, 1, op->value));
+        }
+        if (!RB_UNDEF_P(old)) {
+            if (oa_cas_value(s, old, next)) return next;
+            continue;
+        }
+        klh_insert_locked(op->kh, op->hash, op->key, next);
+        return next;
     }
-    rcu_insert(&op->shard->rcu, op->hash, op->key, next);
-    return next;
 }
 
 static VALUE
@@ -218,8 +304,21 @@ klh_aset_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    rcu_insert(&op->shard->rcu, op->hash, op->key, op->value);
-    return op->value;
+    for (;;) {
+        struct oa_slot *s;
+        VALUE old;
+
+        op->table = klh_table(op->kh);
+        s = oa_find(oa_table_ptr(op->table), op->hash, op->key);
+        old = s ? oa_slot_value(s) : Qundef;
+        if (old == oa_moved || old == oa_locked) continue;
+        if (!RB_UNDEF_P(old)) {
+            if (oa_cas_value(s, old, op->value)) return op->value;
+            continue;
+        }
+        klh_insert_locked(op->kh, op->hash, op->key, op->value);
+        return op->value;
+    }
 }
 
 static VALUE
@@ -227,7 +326,7 @@ klh_delete_body(VALUE ptr)
 {
     struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
     struct klh_op *op = arg->data;
-    VALUE old = rcu_delete(&op->shard->rcu, op->hash, op->key);
+    VALUE old = oa_delete(oa_table_ptr(klh_table(op->kh)), op->hash, op->key);
     return RB_UNDEF_P(old) ? Qnil : old;
 }
 
@@ -245,22 +344,18 @@ klh_collect_pair(VALUE key, VALUE value, void *hash)
     return ST_CONTINUE;
 }
 
-static VALUE
-klh_collect_body(VALUE ptr)
-{
-    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
-    struct klh_op *op = arg->data;
-    rcu_shard_foreach(&op->shard->rcu,
-                      RB_TYPE_P(op->value, T_ARRAY) ? klh_collect_key : klh_collect_pair,
-                      (void *)op->value);
-    return Qnil;
-}
-
 /* One key's #hash or #eql? reaching back into this map raises NestedLockError
- * rather than deadlocking: the inner call may want a shard this thread does
- * not hold, so unlike LockHash there is no safe reentrant path. */
+ * rather than deadlocking: the inner call may want the lock this thread
+ * already holds, so unlike LockHash there is no safe reentrant path. */
+/* Marks the thread without locking: the body synchronises per entry with a
+ * compare-and-swap, but "one key at a time" is the design, so a second key
+ * inside the block is still refused. */
+#define KLH_MARKED(self, op, body) \
+    rs_guarded((self), NULL, (body), (op), false, \
+               "one key is already in hand; two keys together is Ractor::LockHash's job")
+
 #define KLH_GUARDED(self, op, body) \
-    rs_guarded((self), &(op)->shard->lock, (body), (op), false, \
+    rs_guarded((self), &(op)->kh->lock, (body), (op), false, \
                "one key is already in hand; two keys together is Ractor::LockHash's job")
 
 /* --- methods -------------------------------------------------------------- */
@@ -272,19 +367,16 @@ static VALUE
 klh_fast_lookup(VALUE self, VALUE key)
 {
     st_index_t h;
-    struct klh_shard *shard;
 
     if (!SPECIAL_CONST_P(key)) return Qundef;
     /* Nesting is still refused: inside any update, a read raises. */
     if (RB_UNLIKELY(!NIL_P(rs_held(rb_thread_current())))) return Qundef;
 
     h = klh_hash(key);
-    shard = &klh_ptr(self)->shards[h % KLH_NSHARDS];
-    /* No lock: rcu_lookup loads the table and walks immutable nodes, writing
-     * nothing shared, so reads scale.  Immediate key => identity compare, no
-     * Ruby, no safepoint in the window, so GC (the grace period) cannot free a
-     * node this walk is on. */
-    return rcu_lookup(&shard->rcu, h, key);
+    /* No lock: probe the flat array and read the value where it lies.  An
+     * immediate key compares by identity, so this runs no Ruby and writes
+     * nothing shared -- readers never invalidate each other's cache line. */
+    return oa_lookup(oa_table_ptr(klh_table(klh_ptr(self))), h, key);
 }
 
 /*
@@ -360,11 +452,12 @@ klh_key_p(VALUE self, VALUE key)
  *  call-seq:
  *     keylockhash.store_if_absent(key) {|key| computed } -> value
  *
- *  The value at +key+ if it is set; otherwise the block runs once, under that
- *  key's lock, and its result is stored and returned -- the per-key analogue of
- *  Ractor.store_if_absent.  This is the memoize / cache primitive: simultaneous
- *  misses on one key compute once and the rest read the answer, and a hit never
- *  runs the block at all.
+ *  The value at +key+ if it is set to a non-nil value; otherwise the block runs
+ *  once, under that key's lock, and its result is stored and returned -- the
+ *  per-key analogue of Ractor.store_if_absent.  A nil value counts as absent
+ *  (as with #[] and #update), so nil is never cached: the block runs again next
+ *  time.  This is the memoize / cache primitive: simultaneous misses on one key
+ *  compute once and the rest read the answer, and a hit never runs the block.
  */
 static VALUE
 klh_store_if_absent(VALUE self, VALUE key)
@@ -378,15 +471,38 @@ klh_store_if_absent(VALUE self, VALUE key)
      * where a stampede still computes once. */
     if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) {
         st_index_t h = klh_hash(key);
-        struct klh_shard *shard = &klh_ptr(self)->shards[h % KLH_NSHARDS];
-        VALUE found = rcu_lookup(&shard->rcu, h, key);
-        if (!RB_UNDEF_P(found)) return found;
+        VALUE found = oa_lookup(oa_table_ptr(klh_table(klh_ptr(self))), h, key);
+        if (!RB_UNDEF_P(found) && !NIL_P(found)) return found;
     }
 
     key = rs_hash_key(key);
     klh_check_shareable(key);   /* may insert it */
     op = klh_op_make(self, key, Qnil);
     return KLH_GUARDED(self, &op, klh_store_if_absent_body);
+}
+
+/* Synchronising on the entry itself: claim the slot with a compare-and-swap and
+ * the block runs exactly once, with no lock and no interference from another
+ * key.  Qundef means the entry could not be taken this way -- it is absent, or
+ * being carried by a grow -- and the caller falls back to the locked path. */
+static VALUE
+klh_update_claim_body(VALUE ptr)
+{
+    struct rs_guard_arg *arg = (struct rs_guard_arg *)ptr;
+    struct klh_op *op = arg->data;
+
+    for (;;) {
+        VALUE old = oa_slot_value(op->slot);
+
+        if (RB_UNDEF_P(old) || old == oa_moved) return Qundef;   /* absent, or carried */
+        if (old == oa_locked) {          /* another update owns this very key */
+            rb_thread_schedule();        /* it is serialised anyway; let it finish */
+            continue;
+        }
+        if (!oa_try_claim(op->slot, old)) continue;   /* changed first: claim again */
+        op->value = old;
+        return rb_ensure(klh_update_yield, ptr, klh_update_unclaim, ptr);
+    }
 }
 
 static VALUE
@@ -397,6 +513,18 @@ klh_update(VALUE self, VALUE key)
     key = rs_hash_key(key);     /* may insert it */
     klh_check_shareable(key);
     op = klh_op_make(self, key, Qnil);
+
+    /* A key that is already here is synchronised on its own slot, so updates to
+     * unrelated keys never wait for each other.  The lock is only for what
+     * changes the table's shape: introducing a key, and growing. */
+    if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) {
+        op.slot = oa_find_imm(oa_table_ptr(op.table), op.hash, key);
+        if (op.slot) {
+            VALUE v = KLH_MARKED(self, &op, klh_update_claim_body);
+            if (!RB_UNDEF_P(v)) return v;
+            op.slot = NULL;
+        }
+    }
     return KLH_GUARDED(self, &op, klh_update_body);
 }
 
@@ -417,6 +545,25 @@ klh_increment(int argc, VALUE *argv, VALUE self)
     key = rs_hash_key(argv[0]);
     klh_check_shareable(key);   /* may insert it */
     by = argc < 2 ? INT2FIX(1) : argv[1];
+
+    /* A counter is the case this class is asked for most, and it needs no
+     * block: read the slot, add, and swap the sum in with a compare-and-swap.
+     * Losing the race means another Ractor got there first, so the retry adds
+     * to its value -- no update is lost, and no lock is taken. */
+    if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) {
+        st_index_t h = klh_hash(key);
+        struct oa_slot *slot = oa_find_imm(oa_table_ptr(klh_table(klh_ptr(self))), h, key);
+        if (slot) {
+            for (;;) {
+                VALUE old = oa_slot_value(slot);
+                VALUE next;
+                if (RB_UNDEF_P(old) || old == oa_moved || old == oa_locked) break;
+                next = rs_fixnum_add(old, by);
+                if (RB_UNDEF_P(next)) break;          /* not two Fixnums */
+                if (oa_cas_value(slot, old, next)) return next;
+            }
+        }
+    }
     op = klh_op_make(self, key, by);
     return KLH_GUARDED(self, &op, klh_increment_body);
 }
@@ -437,6 +584,20 @@ klh_aset(VALUE self, VALUE key, VALUE value)
     key = rs_hash_key(key);
     klh_check_shareable(key);
     value = rs_shareable_value(value);
+
+    /* The key is already here: the value is one VALUE in a slot, so replacing
+     * it is a single atomic store.  No lock, and nothing left behind. */
+    if (SPECIAL_CONST_P(key) && NIL_P(rs_held(rb_thread_current()))) {
+        st_index_t h = klh_hash(key);
+        struct oa_slot *slot = oa_find_imm(oa_table_ptr(klh_table(klh_ptr(self))), h, key);
+        if (slot) {
+            for (;;) {
+                VALUE old = oa_slot_value(slot);
+                if (RB_UNDEF_P(old) || old == oa_moved || old == oa_locked) break;
+                if (oa_cas_value(slot, old, value)) return value;
+            }
+        }
+    }
     op = klh_op_make(self, key, value);
     return KLH_GUARDED(self, &op, klh_aset_body);
 }
@@ -455,16 +616,15 @@ klh_delete(VALUE self, VALUE key)
 /* keys and to_h visit the shards one at a time, each under its own lock: a
  * plain mutable copy, consistent per shard but NOT a snapshot of the whole
  * map at one moment.  A cross-key snapshot is LockHash territory. */
+/* The table object is held in a local, so a writer that publishes a new one
+ * mid-walk cannot take this one out from under us: it stays reachable. */
 static VALUE
 klh_keys(VALUE self)
 {
     VALUE ary = rb_ary_new();
-    struct keylockhash *kh = klh_ptr(self);
+    VALUE tbl = klh_table(klh_ptr(self));
 
-    for (int i = 0; i < KLH_NSHARDS; i++) {
-        struct klh_op op = { &kh->shards[i], 0, Qnil, ary };
-        KLH_GUARDED(self, &op, klh_collect_body);
-    }
+    oa_foreach(oa_table_ptr(tbl), klh_collect_key, (void *)ary);
     return ary;
 }
 
@@ -472,12 +632,9 @@ static VALUE
 klh_to_h(VALUE self)
 {
     VALUE hash = rb_hash_new();
-    struct keylockhash *kh = klh_ptr(self);
+    VALUE tbl = klh_table(klh_ptr(self));
 
-    for (int i = 0; i < KLH_NSHARDS; i++) {
-        struct klh_op op = { &kh->shards[i], 0, Qnil, hash };
-        KLH_GUARDED(self, &op, klh_collect_body);
-    }
+    oa_foreach(oa_table_ptr(tbl), klh_collect_pair, (void *)hash);
     return hash;
 }
 

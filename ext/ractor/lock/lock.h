@@ -43,7 +43,7 @@ VALUE rs_hash_key(VALUE key);
 VALUE rs_held(VALUE thread);
 void rs_held_set(VALUE thread, VALUE obj);
 
-/* Runs body with +self+ held.  If this thread is already inside +self+, body
+/* Runs body with +self+ held; a NULL lock marks the thread without locking.  If this thread is already inside +self+, body
  * runs directly when +reentrant+, and raises otherwise; being inside a
  * different lock object always raises. */
 VALUE rs_guarded(VALUE self, struct rs_lock *lk, VALUE (*body)(VALUE), void *data,
@@ -62,6 +62,7 @@ struct rs_guard_arg {
 extern VALUE rb_eRactorNestedLock;
 
 void rs_lock_init_class(void);
+void Init_oatable(void);
 void Init_lockvar_class(void);
 void Init_lockhash_class(void);
 void Init_keylockhash_class(void);

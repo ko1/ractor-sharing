@@ -219,7 +219,7 @@ rs_guard_ensure(VALUE ptr)
     int state = 0;
 
     rb_protect(rs_restore_held, (VALUE)arg, &state);
-    rs_lock_release(arg->lock);
+    if (arg->lock) rs_lock_release(arg->lock);
     if (state) rb_jump_tag(state);
     return Qnil;
 }
@@ -263,7 +263,10 @@ rs_guarded(VALUE self, struct rs_lock *lk, VALUE (*body)(VALUE), void *data,
     }
 
     arg.body = body;
-    rs_lock_acquire(lk);
+    /* A NULL lock marks the thread without taking anything: for a body that is
+     * lock-free but still must refuse a second key, the refusal being the
+     * design and not a deadlock cure. */
+    if (lk) rs_lock_acquire(lk);
     /* No interrupt can land between the line above and the ensure below, so
      * nothing here may run Ruby: marking the lock held is the body's first act,
      * inside the ensure, not a step before it. */
@@ -324,6 +327,7 @@ Init_lock(void)
 {
     rb_ext_ractor_safe(true); /* these methods are safe to call from any Ractor */
     rs_lock_init_class();
+    Init_oatable();
     Init_lockvar_class();
     Init_lockhash_class();
     Init_keylockhash_class();

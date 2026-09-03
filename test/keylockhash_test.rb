@@ -24,6 +24,15 @@ class KeyLockHashTest < Test::Unit::TestCase
     assert_true @m.store_if_absent(:arr) { [1] }.frozen?, "computed value made shareable"
   end
 
+  def test_store_if_absent_treats_nil_as_absent
+    runs = 0
+    assert_nil @m.store_if_absent(:n) { runs += 1; nil }  # nil result is not cached
+    assert_nil @m.store_if_absent(:n) { runs += 1; nil }  # so it runs again
+    assert_equal 2, runs, "a nil result is treated as absent, not a cached hit"
+    @m[:e] = nil                                          # an explicitly stored nil
+    assert_equal 7, @m.store_if_absent(:e) { 7 }, "a stored nil counts as absent too"
+  end
+
   def test_store_if_absent_computes_once_under_contention
     # The block holds the key's lock, so it must not take a second lock -- the
     # count of who computed rides in the stored value instead.
