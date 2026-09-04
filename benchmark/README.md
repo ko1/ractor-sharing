@@ -21,6 +21,7 @@ BENCH_CS=1,16 ruby family.rb    # 指定した並行度だけ
 BENCH_SCALE=10 ruby family.rb   # 仕事量を 1/10 に（動作確認用）
 REPS=3 ruby family.rb           # 各セル 3 回、中央値を表に出す
 PART=fastpath ruby family.rb    # increment の近道の表だけ（record で逆）
+BENCH_SUBJECTS=TVar,KeyLockHash ruby family.rb # 対象を名前で絞る
 ```
 
 `REPS>1` のとき、最後に **run 間のばらつき**を 1 行出す（中央値と最悪セル）。
@@ -65,6 +66,20 @@ async の両方**で出す。async は返事を待たない分だけ安い。
 |---|---|
 | `tvar/` | `txn_cost` トランザクション 1 回の値段 / `contention` 同じ TVar の奪い合い / `scaling` 別々の TVar |
 | `active_object/` | `call_cost` 公開メソッド 1 回の値段 / `contention` 1 オブジェクトへの同時呼び出し / `objects` オブジェクト数 / `payload` 引数の大きさ |
+| `keylockhash_churn.rb` | 一意キーの insert と insert/delete churn。throughput / RSS / GC / table保持bytesを `LockHash` と比較 |
+
+`KeyLockHash` の entry arena は append-only なので、`delete` 後も同じ key を
+再利用するための entry 自体は残る。無制限に新しい key を作って消す用途では、
+throughput だけでなく full GC 後の `table` 列を確認すること。例えば:
+
+```
+KEY_KINDS=integer,string PER=50000 BENCH_CS=1,8 REPS=3 \
+  ruby -Ilib benchmark/keylockhash_churn.rb
+```
+
+`table` は map 本体に残る C storage、`strings` はプロセス全体の String 使用量の
+測定前後差を示す。後者は global な補助指標なので、保持量の主指標は `table`。
+entry は key への参照も保持し、compaction はまだ未実装。
 
 `LockVar` / `LockHash` / `ActorHash` の個別 harness はまだ無い。`family.rb` が
 その役を兼ねている。

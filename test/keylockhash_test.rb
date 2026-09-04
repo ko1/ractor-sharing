@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require "timeout"
 
 class KeyLockHashTest < Test::Unit::TestCase
   def setup
@@ -43,6 +44,35 @@ class KeyLockHashTest < Test::Unit::TestCase
     results = rs.map(&:value)
     assert_equal 1, results.uniq.size, "all eight saw the one stored value"
     assert_equal :by, results.first.first
+  end
+
+  def test_store_if_absent_blocks_on_different_keys_run_in_parallel
+    m = Ractor::KeyLockHash.new
+    ready = Ractor::Port.new
+    rs = 2.times.map do |i|
+      Ractor.new(m, ready, i) do |x, port, id|
+        x.store_if_absent(id) do
+          gate = Ractor::Port.new
+          port << [id, gate]
+          gate.receive
+          id
+        end
+      end
+    end
+
+    gates = []
+    begin
+      entered = 2.times.map do
+        id, gate = Timeout.timeout(2) { ready.receive }
+        gates << gate
+        id
+      end
+      assert_equal [0, 1], entered.sort,
+                   "a computation for one missing key must not hold the structural lock"
+    ensure
+      gates.each { |gate| gate << true }
+    end
+    assert_equal [0, 1], rs.map(&:value).sort
   end
 
   def test_reads
@@ -97,7 +127,7 @@ class KeyLockHashTest < Test::Unit::TestCase
     @m[:sym] = :oops
     assert_raise(NoMethodError) { @m.increment(:sym) }
     assert_equal :oops, @m[:sym]
-    assert_equal 1, @m.increment(:sym2), "the shard lock survived the raise"
+    assert_equal 1, @m.increment(:sym2), "the entry claim survived the raise"
   end
 
   def test_increment_is_atomic_across_ractors
@@ -219,6 +249,83 @@ class KeyLockHashTest < Test::Unit::TestCase
     q.pop
     t.kill
     t.join
-    assert_equal 7, @m.update(:a) { 7 }, "a killed holder stranded the shard"
+    assert_equal 7, @m.update(:a) { 7 }, "a killed holder stranded the entry"
   end
+
+  def test_plain_writer_parks_behind_an_update_block
+    entered = Queue.new
+    release = Queue.new
+    owner = Thread.new do
+      @m.update(:a) { entered << true; release.pop; 2 }
+    end
+    entered.pop
+
+    started = Queue.new
+    writer = Thread.new do
+      started << true
+      @m[:a] = 3
+    end
+    started.pop
+    Thread.pass
+    assert_true writer.alive?, "the assignment must wait for the claimed entry"
+
+    release << true
+    assert_not_nil owner.join(2)
+    assert_not_nil writer.join(2), "a Port waiter was not woken by commit"
+    assert_equal 3, @m[:a]
+  ensure
+    release << true if owner&.alive?
+    owner&.join(2)
+    writer&.join(2)
+  end
+
+  def test_exception_rolls_back_and_wakes_a_waiting_writer
+    entered = Queue.new
+    release = Queue.new
+    owner = Thread.new do
+      @m.update(:a) do
+        entered << true
+        release.pop
+        raise "boom"
+      end
+    rescue RuntimeError => error
+      error.message
+    end
+    entered.pop
+
+    writer = Thread.new { @m[:a] = 3 }
+    Timeout.timeout(2) do
+      Thread.pass until writer.status == "sleep"
+    end
+
+    release << true
+    assert_equal "boom", owner.value
+    assert_not_nil writer.join(2), "rollback did not wake the Port waiter"
+    assert_equal 3, @m[:a]
+  ensure
+    release << true if owner&.alive?
+    owner&.join(2)
+    writer&.join(2)
+  end
+
+  def test_resize_does_not_move_a_claimed_entry
+    m = Ractor::KeyLockHash.new
+    16.times { |i| m[i] = i }
+    entered = Queue.new
+    release = Queue.new
+    owner = Thread.new do
+      m.update(0) { |old| entered << true; release.pop; old + 1 }
+    end
+    entered.pop
+
+    2_000.times { |i| m[100 + i] = i }
+    release << true
+    assert_not_nil owner.join(2)
+    assert_equal 1, m[0]
+    assert_equal 2_016, m.keys.size
+  ensure
+    release << true if owner&.alive?
+    owner&.join(2)
+  end
+
 end

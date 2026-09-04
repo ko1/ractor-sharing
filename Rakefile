@@ -14,3 +14,8 @@ Rake::ExtensionTask.new("ractor/lock")
 
 task test: :compile
 task default: :test
+
+desc "Run the extended KeyLockHash concurrency, resize, and GC stress test"
+task "stress:keylockhash" => :compile do
+  ruby "-Ilib", "test/keylockhash_stress.rb"
+end

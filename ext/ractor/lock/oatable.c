@@ -1,205 +1,106 @@
 #include "oatable.h"
 
-#define OA_MIN_SLOTS  8
-#define OA_LOAD_NUM   1         /* grow past half full */
-#define OA_LOAD_DEN   2
+#define OA_MIN_SLOTS 8
+#define OA_LOAD_NUM  1
+#define OA_LOAD_DEN  2
 
-static VALUE rb_cOATable;       /* internal: never handed to Ruby code */
-VALUE oa_moved;                 /* the "carried to the next table" marker */
-VALUE oa_locked;                /* the "a block is running for this slot" marker */
+struct oa_entry_chunk {
+    struct oa_entry_chunk *next;
+    long used;
+    struct oa_entry entries[OA_ENTRY_CHUNK_SIZE];
+};
 
-/* The value a reader should see: while a slot is claimed the committed value
- * lives in the stash, so nobody outside ever observes the marker. */
-static inline VALUE
-oa_committed(const struct oa_slot *s, VALUE v)
-{
-    return v == oa_locked ? OA_LOAD_ACQ(s->stash) : v;
-}
+struct oa_bins {
+    long nslots;                 /* power of two */
+    long used;                   /* published entry pointers */
+    struct oa_entry *slots[1];
+};
 
-/* Follows the forwarding chain to the table that is current for writing. */
-static struct oa_table *
-oa_forward(struct oa_table *t)
-{
-    VALUE nxt;
-    while ((nxt = OA_LOAD_ACQ(t->next)) != 0) t = oa_table_ptr(nxt);
-    return t;
-}
+struct oa_waiter {
+    struct oa_entry *entry;
+    size_t claim_id;
+    VALUE port;
+    bool queued;
+    struct oa_waiter *next;
+};
 
-/* --- the table object ----------------------------------------------------- */
+static VALUE rb_cOABins;
+static VALUE rb_cRactorPort;
+static VALUE rb_eRactorClosed;
+static ID id_new, id_receive, id_push;
+static VALUE sym_wakeup;
 
-static void
-oa_mark(void *ptr)
-{
-    struct oa_table *t = ptr;
-    if (t->next) rb_gc_mark(t->next);
-    for (long i = 0; i < t->nslots; i++) {
-        VALUE k = t->slots[i].key, v = t->slots[i].value;
-        if (!RB_UNDEF_P(k)) rb_gc_mark(k);
-        if (!RB_UNDEF_P(v) && v != oa_moved && v != oa_locked) rb_gc_mark(v);
-        if (!RB_UNDEF_P(t->slots[i].stash)) rb_gc_mark(t->slots[i].stash);
-    }
-}
+VALUE oa_claiming;
+VALUE oa_locked;
+VALUE oa_locked_waiters;
+VALUE oa_releasing;
+
+#define OA_PTR_LOAD(var) \
+    ((struct oa_entry *)rbimpl_atomic_ptr_load((void **)&(var), RBIMPL_ATOMIC_ACQUIRE))
+#define OA_PTR_STORE(var, val) \
+    rbimpl_atomic_ptr_store((volatile void **)&(var), (void *)(val), RBIMPL_ATOMIC_RELEASE)
+
+/* --- bins generations ---------------------------------------------------- */
 
 static size_t
-oa_memsize(const void *ptr)
+oa_bins_memsize(const void *ptr)
 {
-    const struct oa_table *t = ptr;
-    return sizeof(struct oa_table) + (t->nslots - 1) * sizeof(struct oa_slot);
+    const struct oa_bins *bins = ptr;
+    return sizeof(struct oa_bins) + (bins->nslots - 1) * sizeof(struct oa_entry *);
 }
 
-static const rb_data_type_t oa_data_type = {
-    "Ractor::KeyLockHash::table",
-    {oa_mark, RUBY_TYPED_DEFAULT_FREE, oa_memsize, NULL},
+static const rb_data_type_t oa_bins_type = {
+    "Ractor::KeyLockHash::bins",
+    {NULL, RUBY_TYPED_DEFAULT_FREE, oa_bins_memsize, NULL},
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_FROZEN_SHAREABLE
 };
 
-struct oa_table *
-oa_table_ptr(VALUE tbl)
-{
-    struct oa_table *t;
-    TypedData_Get_Struct(tbl, struct oa_table, &oa_data_type, t);
-    return t;
-}
-
 VALUE
-oa_table_new(long nslots)
+oa_bins_new(long nslots)
 {
-    struct oa_table *t;
+    struct oa_bins *bins;
     VALUE obj;
     size_t size;
 
     if (nslots < OA_MIN_SLOTS) nslots = OA_MIN_SLOTS;
-    size = sizeof(struct oa_table) + (nslots - 1) * sizeof(struct oa_slot);
-    t = ruby_xcalloc(1, size);
-    t->nslots = nslots;
-    t->live = t->entries = 0;
-    t->next = 0;
-    for (long i = 0; i < nslots; i++) {
-        t->slots[i].key = OA_EMPTY;
-        t->slots[i].value = OA_TOMBSTONE;
-        t->slots[i].stash = OA_TOMBSTONE;
-    }
-    obj = TypedData_Wrap_Struct(rb_cOATable, &oa_data_type, t);
-    /* The map that owns this is shareable and reaches its table only from C,
-     * so the table has to be declared shareable itself -- freezing alone sets
-     * the frozen flag and tells the collector nothing.  No traversal is wanted
-     * here (the slots are written from C afterwards), so this sets the flag
-     * directly; the type is FROZEN_SHAREABLE for exactly this. */
+    size = sizeof(struct oa_bins) + (nslots - 1) * sizeof(struct oa_entry *);
+    bins = ruby_xcalloc(1, size);
+    bins->nslots = nslots;
+    bins->used = 0;
+    obj = TypedData_Wrap_Struct(rb_cOABins, &oa_bins_type, bins);
     rb_obj_freeze(obj);
 #ifdef HAVE_RB_OBJ_SET_SHAREABLE
     RB_OBJ_SET_SHAREABLE(obj);
 #else
-    rb_ractor_make_shareable(obj);   /* no traversal for a typed data */
+    rb_ractor_make_shareable(obj);
 #endif
     return obj;
 }
 
-long
-oa_size_for(long entries)
+struct oa_bins *
+oa_bins_ptr(VALUE obj)
 {
-    long n = OA_MIN_SLOTS;
-    while (n * OA_LOAD_NUM < (entries + 1) * OA_LOAD_DEN) n *= 2;
-    return n;
+    struct oa_bins *bins;
+    TypedData_Get_Struct(obj, struct oa_bins, &oa_bins_type, bins);
+    return bins;
 }
 
 bool
-oa_needs_grow(const struct oa_table *t)
+oa_bins_needs_grow(const struct oa_bins *bins)
 {
-    /* live counts tombstones: a table churned by delete grows (and so is
-     * rebuilt, which drops them) rather than filling up with dead probes. */
-    return t->live * OA_LOAD_DEN >= t->nslots * OA_LOAD_NUM;
+    return bins->used * OA_LOAD_DEN >= bins->nslots * OA_LOAD_NUM;
 }
 
-/* --- read ----------------------------------------------------------------- */
-
-/* Immediate keys only: eql is identity, so this runs no Ruby and hits no
- * interrupt checkpoint. */
-VALUE
-oa_lookup(struct oa_table *t, st_index_t hash, VALUE key)
+static bool
+oa_bins_put(struct oa_bins *bins, struct oa_entry *entry)
 {
-    long mask = t->nslots - 1;
-    long i = (long)(hash & mask);
+    long mask = bins->nslots - 1;
+    long i = (long)(entry->hash & mask);
 
     for (long n = 0; n <= mask; n++) {
-        struct oa_slot *s = &t->slots[i];
-        VALUE k = OA_LOAD_ACQ(s->key);   /* pairs with the release publish */
-
-        if (RB_UNDEF_P(k)) return Qundef;              /* empty: key is absent */
-        if (s->hash == hash && k == key) {
-            VALUE v = OA_LOAD_ACQ(s->value);
-            if (v == oa_moved) {                       /* carried: read it there */
-                return oa_lookup(oa_forward(t), hash, key);
-            }
-            v = oa_committed(s, v);
-            return RB_UNDEF_P(v) ? Qundef : v;         /* tombstone reads as absent */
-        }
-        i = (i + 1) & mask;
-    }
-    return Qundef;
-}
-
-/* May run Ruby (rb_eql), so the caller holds the writer mutex. */
-VALUE
-oa_get(struct oa_table *t, st_index_t hash, VALUE key)
-{
-    struct oa_slot *s = oa_find(t, hash, key);
-    if (!s) return Qundef;
-    {
-        VALUE v = OA_LOAD_ACQ(s->value);
-        if (v == oa_moved) return oa_get(oa_forward(t), hash, key);
-        v = oa_committed(s, v);
-        return RB_UNDEF_P(v) ? Qundef : v;
-    }
-}
-
-struct oa_slot *
-oa_find(struct oa_table *t, st_index_t hash, VALUE key)
-{
-    long mask;
-
-    t = oa_forward(t);
-    mask = t->nslots - 1;
-    long i = (long)(hash & mask);
-
-    for (long n = 0; n <= mask; n++) {
-        struct oa_slot *s = &t->slots[i];
-        VALUE k = OA_LOAD_ACQ(s->key);
-
-        if (RB_UNDEF_P(k)) return NULL;
-        if (s->hash == hash && (k == key || rb_eql(k, key))) return s;
-        i = (i + 1) & mask;
-    }
-    return NULL;
-}
-
-/* --- write (caller holds the writer mutex) -------------------------------- */
-
-bool
-oa_insert(struct oa_table *t, st_index_t hash, VALUE key, VALUE value)
-{
-    long mask;
-
-    t = oa_forward(t);          /* never write into a table being replaced */
-    mask = t->nslots - 1;
-    long i = (long)(hash & mask);
-
-    for (long n = 0; n <= mask; n++) {
-        struct oa_slot *s = &t->slots[i];
-
-        if (RB_UNDEF_P(s->key)) {
-            /* Value and hash first, key last: a reader that sees the key with
-             * an acquire load therefore sees the value that belongs to it. */
-            s->hash = hash;
-            s->value = value;
-            OA_STORE_REL(s->key, key);   /* publish */
-            t->live++;
-            t->entries++;
-            return true;
-        }
-        if (s->hash == hash && (s->key == key || rb_eql(s->key, key))) {
-            /* A tombstoned slot is reused in place: the key is already here. */
-            if (RB_UNDEF_P(s->value)) t->entries++;
-            OA_STORE_REL(s->value, value);
+        if (!OA_PTR_LOAD(bins->slots[i])) {
+            OA_PTR_STORE(bins->slots[i], entry);
+            bins->used++;
             return true;
         }
         i = (i + 1) & mask;
@@ -207,192 +108,402 @@ oa_insert(struct oa_table *t, st_index_t hash, VALUE key, VALUE value)
     return false;
 }
 
-struct oa_slot *
-oa_find_imm(struct oa_table *t, st_index_t hash, VALUE key)
+VALUE
+oa_bins_grow(struct oa_bins *old, long nslots)
 {
-    long mask;
+    if (nslots <= old->nslots) nslots = old->nslots * 2;
+    VALUE obj = oa_bins_new(nslots);
+    struct oa_bins *bins = oa_bins_ptr(obj);
 
-    t = oa_forward(t);
-    mask = t->nslots - 1;
+    for (long i = 0; i < old->nslots; i++) {
+        struct oa_entry *entry = OA_PTR_LOAD(old->slots[i]);
+        if (entry && !oa_bins_put(bins, entry)) rb_bug("KeyLockHash bins rebuild overflow");
+    }
+    return obj;
+}
+
+/* --- append-only entries ------------------------------------------------- */
+
+void
+oa_store_init(struct oa_store *store)
+{
+    store->head = store->tail = NULL;
+    store->waiters = NULL;
+    rb_native_mutex_initialize(&store->wait_mutex);
+}
+
+void
+oa_store_destroy(struct oa_store *store)
+{
+    struct oa_entry_chunk *chunk = store->head;
+    while (chunk) {
+        struct oa_entry_chunk *next = chunk->next;
+        ruby_xfree(chunk);
+        chunk = next;
+    }
+    rb_native_mutex_destroy(&store->wait_mutex);
+}
+
+void
+oa_store_mark(struct oa_store *store)
+{
+    for (struct oa_entry_chunk *chunk = store->head; chunk; chunk = chunk->next) {
+        for (long i = 0; i < chunk->used; i++) {
+            struct oa_entry *entry = &chunk->entries[i];
+            VALUE key = entry->key;
+            VALUE value = OA_LOAD_ACQ(entry->value);
+            VALUE stash = OA_LOAD_ACQ(entry->stash);
+
+            if (!RB_UNDEF_P(key)) rb_gc_mark(key);
+            if (!RB_UNDEF_P(value) && value != oa_claiming &&
+                value != oa_locked && value != oa_locked_waiters &&
+                value != oa_releasing) rb_gc_mark(value);
+            if (!RB_UNDEF_P(stash)) rb_gc_mark(stash);
+        }
+    }
+}
+
+size_t
+oa_store_memsize(const struct oa_store *store)
+{
+    size_t size = 0;
+    for (const struct oa_entry_chunk *chunk = store->head; chunk; chunk = chunk->next) {
+        size += sizeof(*chunk);
+    }
+    return size;
+}
+
+static struct oa_entry *
+oa_entry_alloc(struct oa_store *store, st_index_t hash, VALUE key,
+               VALUE value, VALUE stash, size_t claim_id)
+{
+    struct oa_entry_chunk *chunk = store->tail;
+    struct oa_entry *entry;
+
+    if (!chunk || chunk->used == OA_ENTRY_CHUNK_SIZE) {
+        chunk = ruby_xcalloc(1, sizeof(*chunk));
+        if (store->tail) store->tail->next = chunk; else store->head = chunk;
+        store->tail = chunk;
+    }
+    entry = &chunk->entries[chunk->used++];
+    entry->hash = hash;
+    entry->key = key;
+    entry->stash = stash;
+    entry->claim_id = claim_id;
+    entry->value = value;
+    return entry;
+}
+
+struct oa_entry *
+oa_insert(struct oa_store *store, struct oa_bins *bins,
+          st_index_t hash, VALUE key, VALUE value)
+{
+    struct oa_entry *entry = oa_entry_alloc(store, hash, key, value, Qundef, 0);
+    if (!oa_bins_put(bins, entry)) rb_bug("KeyLockHash bins insert overflow");
+    return entry;
+}
+
+struct oa_entry *
+oa_insert_claimed(struct oa_store *store, struct oa_bins *bins,
+                  st_index_t hash, VALUE key, VALUE old, size_t *claim_id)
+{
+    struct oa_entry *entry = oa_entry_alloc(store, hash, key, oa_locked, old, 1);
+    if (!oa_bins_put(bins, entry)) rb_bug("KeyLockHash bins insert overflow");
+    *claim_id = 1;
+    return entry;
+}
+
+/* --- lookup -------------------------------------------------------------- */
+
+struct oa_entry *
+oa_find_imm(struct oa_bins *bins, st_index_t hash, VALUE key)
+{
+    long mask = bins->nslots - 1;
     long i = (long)(hash & mask);
 
     for (long n = 0; n <= mask; n++) {
-        struct oa_slot *s = &t->slots[i];
-        VALUE k = OA_LOAD_ACQ(s->key);
+        struct oa_entry *entry = OA_PTR_LOAD(bins->slots[i]);
+        if (!entry) return NULL;
+        if (entry->hash == hash && entry->key == key) return entry;
+        i = (i + 1) & mask;
+    }
+    return NULL;
+}
 
-        if (RB_UNDEF_P(k)) return NULL;
-        if (s->hash == hash && k == key) return s;
+struct oa_entry *
+oa_find(struct oa_bins *bins, st_index_t hash, VALUE key)
+{
+    long mask = bins->nslots - 1;
+    long i = (long)(hash & mask);
+
+    for (long n = 0; n <= mask; n++) {
+        struct oa_entry *entry = OA_PTR_LOAD(bins->slots[i]);
+        if (!entry) return NULL;
+        if (entry->hash == hash && (entry->key == key || rb_eql(entry->key, key))) return entry;
         i = (i + 1) & mask;
     }
     return NULL;
 }
 
 VALUE
-oa_slot_value(const struct oa_slot *s)
+oa_entry_raw(const struct oa_entry *entry)
 {
-    return OA_LOAD_ACQ(s->value);
+    return OA_LOAD_ACQ(entry->value);
 }
 
-/* Claiming publishes the stash first, so a reader that then sees the marker
- * finds the committed value waiting for it. */
-bool
-oa_try_claim(struct oa_slot *s, VALUE old)
-{
-    if (old == oa_locked || old == oa_moved) return false;
-    OA_STORE_REL(s->stash, old);
-    return oa_cas_value(s, old, oa_locked);
-}
-
-/* Releasing a claim.  The swap can only fail one way -- a grow took the slot,
- * having carried the claim forward -- so the release follows the chain and
- * lands on the slot that now holds it.  Nobody else can touch a claimed slot,
- * so this needs no other retry. */
-static void
-oa_release(struct oa_table *t, st_index_t hash, VALUE key, struct oa_slot *s, VALUE val)
+VALUE
+oa_entry_value(const struct oa_entry *entry)
 {
     for (;;) {
-        if (oa_cas_value(s, oa_locked, val)) return;
-        /* Only a grow can take a claimed slot, so this follows it.  The general
-         * probe, not the identity one: a String key would not find itself, and
-         * abandoning the claim would wedge that key forever.  Running #eql? is
-         * safe here -- a non-immediate key only ever claims under the lock. */
-        t = oa_forward(t);
-        s = oa_find(t, hash, key);
-        if (!s) return;                     /* cannot happen: a claim is never dropped */
+        VALUE value = OA_LOAD_ACQ(entry->value);
+        if (value == oa_claiming || value == oa_releasing) continue;
+        if (value == oa_locked || value == oa_locked_waiters) {
+            VALUE stash = OA_LOAD_ACQ(entry->stash);
+            /* A commit publishes the value before clearing stash.  Rechecking
+             * prevents a reader delayed across that transition from returning
+             * the cleared stash or a value belonging to a later claim. */
+            value = OA_LOAD_ACQ(entry->value);
+            if (value != oa_locked && value != oa_locked_waiters) continue;
+            return stash;
+        }
+        return value;
     }
 }
 
-void
-oa_commit(struct oa_table *t, st_index_t hash, VALUE key, struct oa_slot *s, VALUE val)
+VALUE
+oa_lookup(struct oa_bins *bins, st_index_t hash, VALUE key)
 {
-    oa_release(t, hash, key, s, val);
+    struct oa_entry *entry = oa_find_imm(bins, hash, key);
+    return entry ? oa_entry_value(entry) : Qundef;
 }
 
-void
-oa_unclaim(struct oa_table *t, st_index_t hash, VALUE key, struct oa_slot *s, VALUE old)
+VALUE
+oa_get(struct oa_bins *bins, st_index_t hash, VALUE key)
 {
-    oa_release(t, hash, key, s, old);
+    struct oa_entry *entry = oa_find(bins, hash, key);
+    return entry ? oa_entry_value(entry) : Qundef;
 }
 
-/* Puts an already-claimed entry into a fresh table: a grow moves the claim, it
- * does not resolve it, so the owner still owns it on the other side. */
+bool
+oa_entry_cas(struct oa_entry *entry, VALUE old, VALUE value)
+{
+    return rbimpl_atomic_value_cas(&entry->value, old, value,
+                                   RBIMPL_ATOMIC_ACQ_REL,
+                                   RBIMPL_ATOMIC_ACQUIRE) == old;
+}
+
+/* --- claims and Port-backed waiting ------------------------------------- */
+
+bool
+oa_try_claim(struct oa_entry *entry, VALUE old, size_t *claim_id)
+{
+    size_t id;
+
+    if (old == oa_claiming || old == oa_locked ||
+        old == oa_locked_waiters || old == oa_releasing) return false;
+    if (!oa_entry_cas(entry, old, oa_claiming)) return false;
+    id = rbimpl_atomic_size_fetch_add(&entry->claim_id, 1, RBIMPL_ATOMIC_ACQ_REL) + 1;
+    OA_STORE_REL(entry->stash, old);
+    OA_STORE_REL(entry->value, oa_locked);
+    *claim_id = id;
+    return true;
+}
+
 static void
-oa_insert_claimed(struct oa_table *t, st_index_t hash, VALUE key, VALUE stash)
+oa_unlink_waiter(struct oa_store *store, struct oa_waiter *target)
 {
-    long mask = t->nslots - 1;
-    long i = (long)(hash & mask);
-
-    for (long n = 0; n <= mask; n++) {
-        struct oa_slot *s = &t->slots[i];
-        if (RB_UNDEF_P(s->key)) {
-            s->hash = hash;
-            s->stash = stash;
-            s->value = oa_locked;
-            OA_STORE_REL(s->key, key);
-            t->live++;
-            t->entries++;
+    struct oa_waiter **link = &store->waiters;
+    while (*link) {
+        if (*link == target) {
+            *link = target->next;
+            target->queued = false;
             return;
         }
-        i = (i + 1) & mask;
+        link = &(*link)->next;
+    }
+}
+
+struct oa_wait_arg {
+    struct oa_store *store;
+    struct oa_entry *entry;
+    struct oa_waiter waiter;
+};
+
+static VALUE
+oa_wait_receive(VALUE ptr)
+{
+    struct oa_wait_arg *arg = (struct oa_wait_arg *)ptr;
+    return rb_funcall(arg->waiter.port, id_receive, 0);
+}
+
+static VALUE
+oa_wait_ensure(VALUE ptr)
+{
+    struct oa_wait_arg *arg = (struct oa_wait_arg *)ptr;
+    rb_native_mutex_lock(&arg->store->wait_mutex);
+    if (arg->waiter.queued) oa_unlink_waiter(arg->store, &arg->waiter);
+    rb_native_mutex_unlock(&arg->store->wait_mutex);
+    return Qnil;
+}
+
+void
+oa_wait(struct oa_store *store, struct oa_entry *entry)
+{
+    struct oa_wait_arg arg;
+    bool should_wait = false;
+    VALUE state;
+
+    /* CLAIMING contains no Ruby or safepoint and lasts only for the publication
+     * of stash.  Do not enqueue against the previous claim generation. */
+    while (oa_entry_raw(entry) == oa_claiming ||
+           oa_entry_raw(entry) == oa_releasing) rb_thread_schedule();
+    state = oa_entry_raw(entry);
+    if (state != oa_locked && state != oa_locked_waiters) return;
+
+    arg.store = store;
+    arg.entry = entry;
+    arg.waiter.entry = entry;
+    arg.waiter.port = rb_funcall(rb_cRactorPort, id_new, 0);
+    arg.waiter.queued = false;
+    arg.waiter.next = NULL;
+
+    for (;;) {
+        state = oa_entry_raw(entry);
+        if (state == oa_locked_waiters) break;
+        if (state != oa_locked) return;
+        if (oa_entry_cas(entry, oa_locked, oa_locked_waiters)) break;
+    }
+
+    rb_native_mutex_lock(&store->wait_mutex);
+    /* Do not pair a previous generation's id with the next one's marker. */
+    arg.waiter.claim_id = rbimpl_atomic_size_fetch_add(&entry->claim_id, 0,
+                                                        RBIMPL_ATOMIC_ACQUIRE);
+    if (oa_entry_raw(entry) == oa_locked_waiters &&
+        rbimpl_atomic_size_fetch_add(&entry->claim_id, 0,
+                                     RBIMPL_ATOMIC_ACQUIRE) == arg.waiter.claim_id) {
+        arg.waiter.next = store->waiters;
+        store->waiters = &arg.waiter;
+        arg.waiter.queued = true;
+        should_wait = true;
+    }
+    rb_native_mutex_unlock(&store->wait_mutex);
+
+    if (should_wait) {
+        rb_ensure(oa_wait_receive, (VALUE)&arg, oa_wait_ensure, (VALUE)&arg);
+    }
+}
+
+static VALUE
+oa_send_wakeup(VALUE port)
+{
+    rb_funcall(port, id_push, 1, sym_wakeup);
+    return Qtrue;
+}
+
+static VALUE
+oa_take_waiter_port(struct oa_store *store, struct oa_entry *entry, size_t claim_id)
+{
+    VALUE port = Qfalse;
+    struct oa_waiter **link;
+
+    rb_native_mutex_lock(&store->wait_mutex);
+    link = &store->waiters;
+    while (*link) {
+        struct oa_waiter *waiter = *link;
+        if (waiter->entry == entry && waiter->claim_id == claim_id) {
+            *link = waiter->next;
+            waiter->queued = false;
+            port = waiter->port;
+            break;
+        }
+        link = &waiter->next;
+    }
+    rb_native_mutex_unlock(&store->wait_mutex);
+    return port;
+}
+
+void
+oa_wake_claim(struct oa_store *store, struct oa_entry *entry, size_t claim_id)
+{
+    VALUE port;
+    VALUE first_error = Qnil;
+    int first_state = 0;
+
+    while (RTEST(port = oa_take_waiter_port(store, entry, claim_id))) {
+        int state = 0;
+        rb_protect(oa_send_wakeup, port, &state);
+        if (state) {
+            VALUE error = rb_errinfo();
+            if (!rb_obj_is_kind_of(error, rb_eRactorClosed) && !first_state) {
+                first_state = state;
+                first_error = error;
+            }
+            rb_set_errinfo(Qnil);
+        }
+    }
+    if (first_state) {
+        rb_set_errinfo(first_error);
+        rb_jump_tag(first_state);
     }
 }
 
 bool
-oa_cas_value(struct oa_slot *s, VALUE old, VALUE val)
+oa_finish_claim(struct oa_entry *entry, size_t claim_id, VALUE value)
 {
-    return rbimpl_atomic_value_cas(&s->value, old, val,
-                                   RBIMPL_ATOMIC_RELEASE, RBIMPL_ATOMIC_RELAXED) == old;
-}
+    size_t current = rbimpl_atomic_size_fetch_add(&entry->claim_id, 0,
+                                                  RBIMPL_ATOMIC_ACQUIRE);
+    bool had_waiters;
 
-void
-oa_set_value(struct oa_slot *s, VALUE val)
-{
-    OA_STORE_REL(s->value, val);
-}
-
-VALUE
-oa_delete(struct oa_table *t, st_index_t hash, VALUE key)
-{
+    if (current != claim_id) rb_bug("KeyLockHash claim ownership lost");
     for (;;) {
-        struct oa_slot *s = oa_find(t, hash, key);
-        VALUE old;
-
-        if (!s) return Qundef;
-        old = OA_LOAD_ACQ(s->value);
-        if (RB_UNDEF_P(old)) return Qundef;
-        if (old == oa_moved) { t = oa_forward(t); continue; }
-        if (old == oa_locked) {          /* a block is running for this key */
-            rb_thread_schedule();        /* its owner alone may release it */
-            continue;
-        }
-        /* Swapping, not storing: a plain store would overwrite a claim, wedging
-         * the owner's release forever and handing the marker back to Ruby.  The
-         * key stays so a probe chain through it does not break; only the value
-         * becomes a tombstone, and the next rebuild drops the pair. */
-        if (!oa_cas_value(s, old, Qundef)) continue;
-        oa_forward(t)->entries--;
-        return old;
+        VALUE state = oa_entry_raw(entry);
+        if (state == oa_locked) had_waiters = false;
+        else if (state == oa_locked_waiters) had_waiters = true;
+        else rb_bug("KeyLockHash claim ownership lost");
+        if (oa_entry_cas(entry, state, oa_releasing)) break;
     }
+    OA_STORE_REL(entry->stash, Qundef);
+    OA_STORE_REL(entry->value, value);
+    return had_waiters;
 }
 
-/* Growing runs under the writer lock, but lock-free updates do not stop for
- * it, so the two have to hand off: the forwarding pointer is published first,
- * then each slot is *claimed* with a CAS.  An update that lands before the
- * claim is carried over by it; one that lands after finds oa_moved and retries
- * in the new table.  Neither is lost. */
-VALUE
-oa_table_grow(struct oa_table *t, long nslots)
-{
-    VALUE obj = oa_table_new(nslots);
-    struct oa_table *nt = oa_table_ptr(obj);
-
-    OA_STORE_REL(t->next, obj);        /* forwarding, before anything moves */
-
-    for (long i = 0; i < t->nslots; i++) {
-        struct oa_slot *s = &t->slots[i];
-        VALUE k = OA_LOAD_ACQ(s->key), v;
-
-        if (RB_UNDEF_P(k)) continue;
-        for (;;) {                     /* claim the slot's final value */
-            v = OA_LOAD_RLX(s->value);
-            if (v == oa_moved) break;
-            if (oa_cas_value(s, v, oa_moved)) break;
-        }
-        if (v == oa_moved) continue;                   /* already carried */
-        if (v == oa_locked) {                          /* carry the claim, not its value */
-            oa_insert_claimed(nt, s->hash, k, OA_LOAD_ACQ(s->stash));
-            continue;
-        }
-        if (RB_UNDEF_P(v)) continue;                   /* a tombstone */
-        oa_insert(nt, s->hash, k, v);
-    }
-    return obj;
-}
+/* --- iteration ----------------------------------------------------------- */
 
 void
-oa_foreach(struct oa_table *t, oa_iter_fn *fn, void *arg)
+oa_foreach(struct oa_bins *bins, oa_iter_fn *fn, void *arg)
 {
-    for (long i = 0; i < t->nslots; i++) {
-        struct oa_slot *s = &t->slots[i];
-        VALUE k = OA_LOAD_ACQ(s->key);
-        VALUE v = oa_committed(s, OA_LOAD_ACQ(s->value));
-        if (RB_UNDEF_P(k) || RB_UNDEF_P(v) || v == oa_moved) continue;
-        if (fn(k, v, arg) != ST_CONTINUE) return;
+    for (long i = 0; i < bins->nslots; i++) {
+        struct oa_entry *entry = OA_PTR_LOAD(bins->slots[i]);
+        VALUE value;
+        if (!entry) continue;
+        value = oa_entry_value(entry);
+        if (RB_UNDEF_P(value)) continue;
+        if (fn(entry->key, value, arg) != ST_CONTINUE) return;
     }
 }
 
 void
 Init_oatable(void)
 {
-    /* An internal class, never reachable from Ruby: it only gives the table
-     * objects a home so the GC can mark and free them. */
-    rb_cOATable = rb_define_class_under(rb_cRactor, "KeyLockHashTable", rb_cObject);
-    rb_undef_alloc_func(rb_cOATable);
-    rb_gc_register_mark_object(rb_cOATable);
+    rb_cOABins = rb_define_class_under(rb_cRactor, "KeyLockHashBins", rb_cObject);
+    rb_undef_alloc_func(rb_cOABins);
+    rb_gc_register_mark_object(rb_cOABins);
 
-    /* Unique and unreachable from Ruby, so it can never collide with a value. */
-    oa_moved = rb_obj_freeze(rb_obj_alloc(rb_cObject));
-    rb_gc_register_mark_object(oa_moved);
+    rb_cRactorPort = rb_const_get(rb_cRactor, rb_intern("Port"));
+    rb_eRactorClosed = rb_const_get(rb_cRactor, rb_intern("ClosedError"));
+    rb_gc_register_mark_object(rb_cRactorPort);
+    rb_gc_register_mark_object(rb_eRactorClosed);
+    id_new = rb_intern("new");
+    id_receive = rb_intern("receive");
+    id_push = rb_intern("<<");
+    sym_wakeup = ID2SYM(rb_intern("__keylockhash_wakeup__"));
+
+    oa_claiming = rb_obj_freeze(rb_obj_alloc(rb_cObject));
     oa_locked = rb_obj_freeze(rb_obj_alloc(rb_cObject));
+    oa_locked_waiters = rb_obj_freeze(rb_obj_alloc(rb_cObject));
+    oa_releasing = rb_obj_freeze(rb_obj_alloc(rb_cObject));
+    rb_gc_register_mark_object(oa_claiming);
     rb_gc_register_mark_object(oa_locked);
+    rb_gc_register_mark_object(oa_locked_waiters);
+    rb_gc_register_mark_object(oa_releasing);
 }

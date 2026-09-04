@@ -122,6 +122,12 @@ SUBJECTS = [
     seq:   Ractor.shareable_proc { |o| o.value[:seq] } },
 ]
 
+if ENV["BENCH_SUBJECTS"]
+  names = ENV["BENCH_SUBJECTS"].split(",")
+  SUBJECTS.select! { |subject| names.any? { |name| subject[:label].include?(name) } }
+  abort "BENCH_SUBJECTS matched no record subjects" if SUBJECTS.empty? && PART != "fastpath"
+end
+
 # increment はどちらのクラスでも特別扱いされていて、Fixnum どうしの和が Fixnum に
 # 収まるときは Ruby を一切走らせずに足して返す近道を通る
 # (tvar.c tvar_calc_inc / lockvar.c lockvar_fixnum_add)。上のレコードの表とは
@@ -136,6 +142,12 @@ FAST_PATH = [
     write: Ractor.shareable_proc { |o| o.increment(:n) },
     seq: Ractor.shareable_proc { |o| o[:n] } },
 ]
+
+if ENV["BENCH_SUBJECTS"]
+  names = ENV["BENCH_SUBJECTS"].split(",")
+  FAST_PATH.select! { |subject| names.any? { |name| subject[:label].include?(name) } }
+  abort "BENCH_SUBJECTS matched no fast-path subjects" if FAST_PATH.empty? && PART == "fastpath"
+end
 
 MODES = %i[read write mix].freeze
 

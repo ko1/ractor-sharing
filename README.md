@@ -16,9 +16,10 @@ What each one is, in a line:
   update waits for its turn, and then its block runs exactly once.
 * **[`Ractor::LockHash`](docs/lockhash.md)** is a hash behind one lock. A
   `synchronize` section is atomic across the keys of that hash, and only that hash.
-* **[`Ractor::KeyLockHash`](docs/keylockhash.md)** is a hash with one lock per
-  key: the row lock to LockHash's table lock. Updates to unrelated keys run in
-  parallel, and nothing is atomic across two keys.
+* **[`Ractor::KeyLockHash`](docs/keylockhash.md)** is a hash with one stable
+  entry and atomic claim per key: the row lock to LockHash's table lock. Reads
+  are lock-free, updates to unrelated keys run in parallel, and nothing is
+  atomic across two keys.
 * **[`Ractor::ActiveObject`](docs/active_object.md)** is an object that lives in
   a Ractor of its own. It never leaves; callers send it method calls, and the
   owner runs them one at a time.
@@ -31,12 +32,12 @@ abstraction only when one of the reasons below applies.
 
 | | reach for it when | read | write |
 |---|---|---:|---:|
-| [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 68 ns | 351 ns |
-| [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 74 ns | 352 ns |
-| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | two or more keys must change together, or a snapshot must be consistent | 132 ns | 433 ns |
-| [`Ractor::KeyLockHash`](docs/keylockhash.md)<br>`m.update(k) {\|v\| v + 1 }` | the keys are independent: registries, caches, buckets, idempotency claims. Parallel across keys | 137 ns | 372 ns |
-| [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.3 µs | 2.8 µs |
-| [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.2 µs | 3.2 µs |
+| [`Ractor::TVar`](docs/tvar.md)<br>`Ractor.atomically { a.value += 1 }` | always, unless a row below says otherwise. One variable or a dozen, with no lock order to get wrong | 80 ns | 348 ns |
+| [`Ractor::LockVar`](docs/lockvar.md)<br>`lv.update {\|v\| v + 1 }` | the block must run **exactly once**, because it logs, sends, or does anything else a retry would repeat | 86 ns | 342 ns |
+| [`Ractor::LockHash`](docs/lockhash.md)<br>`h.synchronize {\|h\| h[k] = v }` | two or more keys must change together, or a snapshot must be consistent | 119 ns | 443 ns |
+| [`Ractor::KeyLockHash`](docs/keylockhash.md)<br>`m.update(k) {\|v\| v + 1 }` | the keys are independent: registries, caches, buckets, idempotency claims. Parallel across keys | 65 ns | 358 ns |
+| [`Ractor::ActiveObject`](docs/active_object.md)<br>`sync def add(k, v) = @db[k] = v` | the values will not be frozen, and the state deserves methods of its own | 2.2 µs | 2.7 µs |
+| [`Ractor::ActorHash`](docs/actor_hash.md)<br>`h.call {\|h\| h[:hits] += 1 }` | the same, and a plain hash is all the interface you need | 2.2 µs | 2.8 µs |
 
 One uncontended operation from a single Ractor on 16 cores, replacing a frozen
 record. The two at the bottom also start a Ractor apiece, which runs until the
@@ -180,8 +181,8 @@ hash, with `to_h` a snapshot no write can tear.
 **Independent keys, in parallel: `KeyLockHash`.** A registry, a cache, a
 scoreboard where each worker owns its row: hashes whose keys never change
 together. There the whole-hash lock above is paying for atomicity nobody asked
-for, with unrelated clients waiting in one queue. `KeyLockHash` locks per key,
-and the everyday shape is a get-or-create cache:
+for, with unrelated clients waiting in one queue. `KeyLockHash` claims a stable
+entry per key, and the everyday shape is a get-or-create cache:
 
 ```ruby
 cache = Ractor::KeyLockHash.new
@@ -203,8 +204,8 @@ readers.sum(&:value) #=> 10
 ```
 
 Four hundred fetches over ten pages, and the render ran exactly ten times.
-`update` holds that key's lock while the block runs, so simultaneous misses on
-one page wait for the first -- and waiting is correct here, because everyone
+`update` owns that entry's claim while the block runs, so simultaneous misses
+on one page wait for the first -- and waiting is correct here, because everyone
 waiting would have rendered the same page themselves: the system does the work
 once instead of eight times, and a miss on a *different* page never queues at
 all. (That is the one shape where a long block is the right trade; the rule
@@ -311,54 +312,56 @@ operation, counted across all Ractors, on 16 cores.
 
 | | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
 |---|---:|---:|---:|
-| `TVar#value` | 68 | **9** | 9 |
-| `LockVar#value` | 74 | 365 | 10 |
-| `LockHash#[]` | 132 | 489 | 23 |
-| `KeyLockHash#[]` | 137 | 478 | 18 |
-| `ActiveObject` sync method | 2300 | 1380 | 742 |
-| `ActorHash#[]` | 2179 | 1451 | 730 |
-| no sharing at all | 78 | n/a | 9 |
+| `TVar#value` | 80 | **9** | 9 |
+| `KeyLockHash#[]` | 65 | **12** | 14 |
+| `LockVar#value` | 86 | 328 | 10 |
+| `LockHash#[]` | 119 | 421 | 19 |
+| `ActiveObject` sync method | 2172 | 1421 | 741 |
+| `ActorHash#[]` | 2211 | 1399 | 728 |
+| no sharing at all | 65 | n/a | 8 |
 
-**Reads of a shared object scale on `TVar` and do not on the two locks.** A
-`TVar` read outside a transaction takes nothing, so sixteen Ractors reading one
-`TVar` cost the same as sixteen reading their own. `LockVar#value` and
-`LockHash#[]` take the lock, so those sixteen readers stand in a queue: 365 ns
-against 9. Give each Ractor its own object and every one of them scales to the
+**Reads of a shared object scale on the two lock-free readers, `TVar` and
+`KeyLockHash`, and queue on the two locks.** A `TVar` read outside a transaction
+takes nothing, and a `KeyLockHash` read probes an atomically published bins
+generation and loads its stable entry without a lock, so sixteen Ractors reading one shared object
+cost about what one does -- 9 and 12 ns. `LockVar#value` and `LockHash#[]` take
+the lock, so those sixteen readers stand in a queue: 328 and 421 ns against 10
+and 19. Give each Ractor its own object and every one of them scales to the
 machine's limit.
 
 ### Writing
 
 | | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
 |---|---:|---:|---:|
-| `TVar` transaction | 351 | **509** | 108 |
-| `LockVar#update` | 352 | 1102 | **50** |
-| `LockHash#synchronize` | 433 | 1238 | 58 |
-| `KeyLockHash#update` | 372 | 1173 | 52 |
-| `ActiveObject` async method | 1555 | 839 | 179 |
-| `ActiveObject` sync method | 2789 | 1587 | 760 |
-| `ActorHash#async_call` | 1919 | 1032 | 219 |
-| `ActorHash#call` | 3166 | 1740 | 747 |
-| no sharing at all | 117 | n/a | 18 |
+| `TVar` transaction | 348 | **758** | 107 |
+| `LockVar#update` | 342 | 1072 | **46** |
+| `LockHash#synchronize` | 443 | 1240 | 65 |
+| `KeyLockHash#update` | 358 | 1202 | 52 |
+| `ActiveObject` async method | 1525 | 742 | 179 |
+| `ActiveObject` sync method | 2701 | 1590 | 748 |
+| `ActorHash#async_call` | 1607 | 994 | 179 |
+| `ActorHash#call` | 2771 | 1735 | 746 |
+| no sharing at all | 136 | n/a | 18 |
 
-**Under contention, nothing scales and `TVar` stays about 2× ahead**, because losing a
-race and running a short block again is cheaper than parking a thread and waking
-it, and a transaction that keeps losing backs off, about 100 ns per consecutive
-loss, spinning rather than sleeping, before running again. That cell is the
-volatile one: between sweeps it lands anywhere from 500 to 870 ns, so its row is
-the median of seven runs where every other cell is the median of three.
+**Under contention, nothing scales and `TVar` stays ahead**, roughly 1.5×,
+because losing a race and running a short block again is cheaper than parking a
+thread and waking it, and a transaction that keeps losing backs off, about 100 ns
+per consecutive loss, spinning rather than sleeping, before running again. Every
+cell is the median of three runs; the `TVar` contended-write cell is the volatile
+one, swinging between sweeps (500 to 870 ns across sessions).
 **Spread out, the locks scale as far as the machine does and `TVar` does not**:
-7.0× for `LockVar` against 3.3×, because every committing transaction takes one
-process wide lock to allocate its version number. **Not waiting for the reply is
-worth 3× to 4× when the objects are spread out** on the two classes that keep a
-Ractor (16 on their own, sync against async above); on one shared object the
-serialisation at the owner leaves it under 2×, and from a single caller it is
+about 7× for `LockVar` against 3.3×, because every committing transaction takes
+one process wide lock to allocate its version number. **Not waiting for the reply
+is worth about 4× when the objects are spread out** on the two classes that keep
+a Ractor (16 on their own, sync against async above); on one shared object the
+serialisation at the owner leaves it about 2×, and from a single caller it is
 about 1.7×.
 
-Neither of these two conditions shows what `KeyLockHash` is for: on one shared
-key it is the same lock as everyone else, and separate maps share nothing. Its
-condition is **one shared map with a key per Ractor**, where the table lock
-pays for every neighbour and the key lock does not: 123 ns against `LockHash`'s
-1212 at four Ractors, 248 against 1312 at sixteen.
+`KeyLockHash` writes are where its shape shows -- its reads already scaled with
+`TVar` in the reading table. On one shared key it is one lock like the rest, but
+over **one shared map with a key per Ractor** the per-entry claims scale where
+`LockHash`'s single table lock does not: 45 ns against `LockHash`'s 568 at four
+Ractors, 22 against 593 at sixteen.
 
 The `no sharing at all` row is the machine's own ceiling: about 8× is as far as
 anything here scales. Called from the main Ractor rather than a worker, the two
@@ -373,9 +376,9 @@ that path rather than the class. It gets a table of its own:
 
 | | one Ractor (ns) | 16 on one object (ns) | 16 on their own (ns) |
 |---|---:|---:|---:|
-| `LockVar#increment` | 80 | 348 | **9** |
-| `TVar#increment` | 76 | **159** | 75 |
-| `KeyLockHash#increment` | 144 | 518 | 16 |
+| `LockVar#increment` | 74 | 361 | **8** |
+| `TVar#increment` | 80 | **145** | 75 |
+| `KeyLockHash#increment` | 140 | 544 | 20 |
 
 One hot counter belongs in a `LockVar` (or a `TVar`, contended); counters that
 spread over keys belong in the `KeyLockHash`, which pays the hash and the guard
@@ -422,8 +425,23 @@ Ruby 4.0 or later (`Ractor::Port`, and Ractors that are worth using).
 ## Development
 
 ```
-rake            # compile both extensions and run every test
+rake                         # compile both extensions and run the normal tests
+rake stress:keylockhash      # opt-in resize/contention/GC stress test
 ```
+
+The stress test is deliberately excluded from the normal `rake` task so it does
+not slow CI. Tune it with `KLH_STRESS_SEEDS`, `KLH_STRESS_WORKERS`,
+`KLH_STRESS_ROUNDS`, `KLH_STRESS_GC_ROUNDS`, `KLH_STRESS_COMPACT=0`, and
+`KLH_STRESS_TIMEOUT`. For example:
+
+```
+KLH_STRESS_WORKERS=16 KLH_STRESS_ROUNDS=10000 \
+  KLH_STRESS_GC_ROUNDS=250 rake stress:keylockhash
+```
+
+`KeyLockHash` retains an append-only entry for every distinct key it has seen,
+including deleted keys. Use `benchmark/keylockhash_churn.rb` to measure that
+time/space tradeoff; compaction of those entries is not implemented yet.
 
 Documentation for each class is in [docs/](docs/), and ten runnable,
 self-checking examples are in [examples/](examples/).
