@@ -197,7 +197,7 @@ class KeyLockHashTest < Test::Unit::TestCase
   end
 
   def test_a_key_callback_that_reads_the_map_does_not_deadlock
-    # A read takes no lock (RCU), so a key whose #hash reads the same map is
+    # A read takes no lock, so a key whose #hash reads the same map is
     # safe -- it neither deadlocks (the old st bug) nor has to raise: the inner
     # read just runs.
     map = Ractor::KeyLockHash.new

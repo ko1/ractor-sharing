@@ -162,14 +162,6 @@ plain hash). Spread over independent keys they scale like the reads -- one
 shared map with a key per Ractor updates at **22 ns** for sixteen against
 `LockHash`'s **593** -- but the reason to choose this class is the read column.
 
-A direct old-RRCU/new-stable-entry A/B isolates the redesign from the larger
-family harness. At sixteen readers it measured 5.255 ns/op before and 5.248
-ns/op after: publishing a bins generation and loading a stable entry did not add
-a measurable read penalty. Independent-key updates were 17.6 versus 18.8 ns/op.
-Same-key contention is the intentional trade: Port parking avoids burning a CPU
-through a long update block, but costs more than the old spin path for a tiny
-block (196 versus 271 ns/op in that focused benchmark).
-
 ## Stress testing
 
 The extended suite races shared and independent keys, rollback, deletion,
